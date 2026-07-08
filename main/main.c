@@ -1,0 +1,513 @@
+/*
+ * main.c -- ESP32 Touch Controller
+ *
+ * Reads capacitive touch from an AXS5106L controller, interprets the
+ * gestures, and sends 6-byte HID gamepad reports over a transmit-only
+ * UART to an esp32s3_smart_keyboard receiver.
+ *
+ * Hardware (Waveshare ESP32-C6-Touch-LCD-1.47, verified):
+ *   LCD  JD9853  SPI2   SCLK=1 MOSI=2 MISO=3  CS=14 DC=15 RST=22 BL=23
+ *                172×320 portrait, column gap=34, colour-inversion on
+ *   Touch AXS5106L  I2C0  SDA=18 SCL=19 INT=21 RST=20  addr=0x63
+ *   UART  TX=GPIO13  115200 8-N-1  (gamepad HID output)
+ *
+ * Gesture → HID mapping
+ *   Slide up        positive axis impulse (+32767 for 100 ms then 0)
+ *   Slide down      negative axis impulse (-32767 for 100 ms then 0)
+ *   Short tap upper half  Button 1 press + release
+ *   Short tap lower half  Button 0 press + release
+ *   Long tap (≥500 ms)    toggle VERTICAL / HORIZONTAL mode
+ *
+ * In VERTICAL mode the impulse is sent on the Y axis; in HORIZONTAL
+ * mode it is sent on the X axis.
+ *
+ * The screen shows a schematic navigation guide and the current mode
+ * (black background, thin white lines).
+ */
+
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_err.h"
+#include "driver/gpio.h"
+#include "driver/spi_master.h"
+#include "driver/ledc.h"
+#include "driver/i2c_master.h"
+
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_jd9853.h"
+#include "esp_lcd_touch.h"
+#include "esp_lcd_touch_axs5106.h"
+
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
+
+#include "uart_gamepad.h"
+#include "sdkconfig.h"
+
+static const char *TAG = "tc";
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Board-specific pin definitions
+ * ───────────────────────────────────────────────────────────────────── */
+#ifdef CONFIG_TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
+
+/* LCD SPI (SPI2) */
+#define LCD_SCLK         GPIO_NUM_1
+#define LCD_MOSI         GPIO_NUM_2
+#define LCD_MISO         GPIO_NUM_3
+#define LCD_CS           GPIO_NUM_14
+#define LCD_DC           GPIO_NUM_15
+#define LCD_RST          GPIO_NUM_22
+#define LCD_BL           GPIO_NUM_23
+#define LCD_PIXEL_CLK_HZ (80 * 1000 * 1000)
+#define LCD_H_RES        172
+#define LCD_V_RES        320
+#define LCD_COL_GAP      34   /* JD9853 x-offset at rotation 0 */
+
+/* Touch I2C (I2C0) */
+#define TP_SDA           GPIO_NUM_18
+#define TP_SCL           GPIO_NUM_19
+#define TP_INT           GPIO_NUM_21
+#define TP_RST           GPIO_NUM_20
+
+/* Backlight PWM */
+#define BL_LEDC_TIMER    LEDC_TIMER_0
+#define BL_LEDC_MODE     LEDC_LOW_SPEED_MODE
+#define BL_LEDC_CH       LEDC_CHANNEL_0
+#define BL_LEDC_DUTY_RES LEDC_TIMER_10_BIT
+#define BL_LEDC_FREQ_HZ  5000
+
+#endif /* CONFIG_TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147 */
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Application constants
+ * ───────────────────────────────────────────────────────────────────── */
+#define DRAW_BUF_LINES  50    /* LVGL DMA draw buffer height in lines */
+#define TOUCH_POLL_MS   20    /* touch polling interval               */
+#define IMPULSE_MS      100   /* axis impulse duration                */
+#define BUTTON_MS       50    /* button press duration                */
+
+#define SLIDE_MIN_PX    CONFIG_TC_SLIDE_MIN_PX
+#define TAP_MAX_MOVE_PX CONFIG_TC_TAP_MAX_MOVE_PX
+#define LONG_TAP_MS     CONFIG_TC_LONG_TAP_MS
+
+typedef enum {
+    MODE_VERTICAL,
+    MODE_HORIZONTAL,
+} tc_mode_t;
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Module-level state
+ * ───────────────────────────────────────────────────────────────────── */
+static esp_lcd_panel_io_handle_t s_io_handle;
+static esp_lcd_panel_handle_t    s_panel;
+static esp_lcd_touch_handle_t    s_touch;
+static lv_disp_t                *s_disp;
+static lv_obj_t                 *s_lbl_mode;   /* updated on mode change */
+static volatile tc_mode_t        s_mode = MODE_VERTICAL;
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Hardware initialisation
+ * ───────────────────────────────────────────────────────────────────── */
+static void hw_lcd_init(void)
+{
+    /* SPI bus */
+    const spi_bus_config_t buscfg = {
+        .sclk_io_num     = LCD_SCLK,
+        .mosi_io_num     = LCD_MOSI,
+        .miso_io_num     = LCD_MISO,
+        .quadhd_io_num   = -1,
+        .quadwp_io_num   = -1,
+        .max_transfer_sz = LCD_H_RES * DRAW_BUF_LINES * sizeof(uint16_t),
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
+
+    /* Panel IO */
+    esp_lcd_panel_io_spi_config_t io_cfg =
+        JD9853_PANEL_IO_SPI_CONFIG(LCD_CS, LCD_DC, NULL, NULL);
+    io_cfg.pclk_hz = LCD_PIXEL_CLK_HZ;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
+        (esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_cfg, &s_io_handle));
+
+    /* Panel */
+    const esp_lcd_panel_dev_config_t panel_cfg = {
+        .reset_gpio_num = LCD_RST,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_jd9853(s_io_handle, &panel_cfg, &s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_COL_GAP, 0));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+
+    /* Backlight — full brightness */
+    const ledc_timer_config_t ledc_timer = {
+        .speed_mode      = BL_LEDC_MODE,
+        .timer_num       = BL_LEDC_TIMER,
+        .duty_resolution = BL_LEDC_DUTY_RES,
+        .freq_hz         = BL_LEDC_FREQ_HZ,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+
+    const ledc_channel_config_t ledc_ch = {
+        .speed_mode = BL_LEDC_MODE,
+        .channel    = BL_LEDC_CH,
+        .timer_sel  = BL_LEDC_TIMER,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .gpio_num   = LCD_BL,
+        .duty       = (1u << BL_LEDC_DUTY_RES) - 1u, /* 100% */
+        .hpoint     = 0,
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_ch));
+}
+
+static void hw_touch_init(void)
+{
+    /* I2C master bus */
+    i2c_master_bus_handle_t i2c_bus;
+    const i2c_master_bus_config_t i2c_cfg = {
+        .clk_source                   = I2C_CLK_SRC_DEFAULT,
+        .i2c_port                     = I2C_NUM_0,
+        .scl_io_num                   = TP_SCL,
+        .sda_io_num                   = TP_SDA,
+        .glitch_ignore_cnt            = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_cfg, &i2c_bus));
+
+    /* Add AXS5106 device */
+    i2c_master_dev_handle_t dev;
+    const i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = ESP_LCD_TOUCH_IO_I2C_AXS5106_ADDRESS,
+        .scl_speed_hz    = 400000,
+    };
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &dev));
+
+    /* Touch configuration for portrait rotation 0:
+     *   mirror_x=1 maps raw x so that x=0 is at the left edge on screen. */
+    const esp_lcd_touch_config_t tp_cfg = {
+        .x_max        = LCD_H_RES,
+        .y_max        = LCD_V_RES,
+        .rst_gpio_num = TP_RST,
+        .int_gpio_num = TP_INT,
+        .levels = {
+            .reset     = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy  = 0,
+            .mirror_x = 1,
+            .mirror_y = 0,
+        },
+    };
+
+    /* Retry — controller may be slow to wake after power-on. */
+    for (int attempt = 1; attempt <= 6; attempt++) {
+        esp_err_t err = esp_lcd_touch_new_i2c_axs5106(dev, &tp_cfg, &s_touch);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "AXS5106 ready (attempt %d)", attempt);
+            return;
+        }
+        ESP_LOGW(TAG, "AXS5106 attempt %d: %s", attempt, esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(80));
+    }
+    s_touch = NULL;
+    ESP_LOGW(TAG, "Touch unavailable — gesture input disabled");
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * LVGL setup
+ * ───────────────────────────────────────────────────────────────────── */
+static void lvgl_setup(void)
+{
+    const lvgl_port_cfg_t lvgl_cfg = {
+        .task_priority     = 4,
+        .task_stack        = 10 * 1024,
+        .task_affinity     = -1,
+        .task_max_sleep_ms = 500,
+        .timer_period_ms   = 5,
+    };
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle     = s_io_handle,
+        .panel_handle  = s_panel,
+        .buffer_size   = LCD_H_RES * DRAW_BUF_LINES,
+        .double_buffer = true,
+        .hres          = LCD_H_RES,
+        .vres          = LCD_V_RES,
+        .monochrome    = false,
+        .rotation = {
+            .swap_xy  = false,
+            .mirror_x = false,
+            .mirror_y = false,
+        },
+        .flags = {
+            .buff_dma  = true,
+#if LVGL_VERSION_MAJOR >= 9
+            .swap_bytes = true,
+#endif
+        },
+    };
+    s_disp = lvgl_port_add_disp(&disp_cfg);
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Navigation guide UI (schematic style: black background, thin lines)
+ * ───────────────────────────────────────────────────────────────────── */
+
+/*
+ * Screen layout (172 × 320 portrait):
+ *
+ *  ┌─────────────────────────────┐  y=0
+ *  │            ↑                │       up-arrow  (slide = positive axis)
+ *  │                             │
+ *  │         BTN 1               │       upper half — tap triggers Button 1
+ *  │                             │
+ *  ├─────────────────────────────┤  y=160  centre divider
+ *  │                             │
+ *  │         BTN 0               │       lower half — tap triggers Button 0
+ *  │                             │
+ *  │            ↓                │       down-arrow (slide = negative axis)
+ *  ├─────────────────────────────┤  y~294  mode separator
+ *  │  MODE: VERTICAL             │       mode indicator
+ *  └─────────────────────────────┘  y=320
+ */
+static void ui_create(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    /* Black background */
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+    /* Shared style for thin white lines */
+    static lv_style_t st_line;
+    lv_style_init(&st_line);
+    lv_style_set_line_color(&st_line, lv_color_white());
+    lv_style_set_line_width(&st_line, 1);
+    lv_style_set_line_opa(&st_line, LV_OPA_COVER);
+
+    /* ── Up arrow — top of screen ── */
+    lv_obj_t *lbl_up = lv_label_create(scr);
+    lv_label_set_text(lbl_up, LV_SYMBOL_UP);
+    lv_obj_set_style_text_color(lbl_up, lv_color_white(), 0);
+    lv_obj_align(lbl_up, LV_ALIGN_TOP_MID, 0, 10);
+
+    /* "BTN 1" label in upper half */
+    lv_obj_t *lbl_btn1 = lv_label_create(scr);
+    lv_label_set_text(lbl_btn1, "BTN 1");
+    lv_obj_set_style_text_color(lbl_btn1, lv_color_white(), 0);
+    lv_obj_align(lbl_btn1, LV_ALIGN_TOP_MID, 0, 70);
+
+    /* ── Centre divider line ── */
+    static lv_point_t div_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
+    lv_obj_t *divider = lv_line_create(scr);
+    lv_obj_add_style(divider, &st_line, 0);
+    lv_line_set_points(divider, div_pts, 2);
+    /* Place so the line sits exactly at y=160 (screen centre) */
+    lv_obj_set_pos(divider, 0, LCD_V_RES / 2);
+
+    /* "BTN 0" label in lower half */
+    lv_obj_t *lbl_btn0 = lv_label_create(scr);
+    lv_label_set_text(lbl_btn0, "BTN 0");
+    lv_obj_set_style_text_color(lbl_btn0, lv_color_white(), 0);
+    lv_obj_align(lbl_btn0, LV_ALIGN_CENTER, 0, 60);
+
+    /* ── Down arrow — bottom area ── */
+    lv_obj_t *lbl_dn = lv_label_create(scr);
+    lv_label_set_text(lbl_dn, LV_SYMBOL_DOWN);
+    lv_obj_set_style_text_color(lbl_dn, lv_color_white(), 0);
+    lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -44);
+
+    /* ── Mode separator line ── */
+    static lv_point_t sep_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
+    lv_obj_t *sep = lv_line_create(scr);
+    lv_obj_add_style(sep, &st_line, 0);
+    lv_line_set_points(sep, sep_pts, 2);
+    lv_obj_set_pos(sep, 0, LCD_V_RES - 27);
+
+    /* ── Mode label ── */
+    s_lbl_mode = lv_label_create(scr);
+    lv_label_set_text(s_lbl_mode, "MODE: VERTICAL");
+    lv_obj_set_style_text_color(s_lbl_mode, lv_color_white(), 0);
+    lv_obj_align(s_lbl_mode, LV_ALIGN_BOTTOM_MID, 0, -8);
+}
+
+static void ui_update_mode(tc_mode_t mode)
+{
+    /* Must be called with the LVGL port lock held. */
+    lv_label_set_text(s_lbl_mode,
+                      (mode == MODE_VERTICAL) ? "MODE: VERTICAL"
+                                              : "MODE: HORIZONTAL");
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Gamepad event dispatch helpers
+ * ───────────────────────────────────────────────────────────────────── */
+
+/* Send an impulse on the active axis: max value for IMPULSE_MS, then 0. */
+static void send_axis_impulse(int16_t value)
+{
+    if (s_mode == MODE_VERTICAL) {
+        uart_gamepad_report(0, value, 0);
+        vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
+        uart_gamepad_report(0, 0, 0);
+    } else {
+        uart_gamepad_report(value, 0, 0);
+        vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
+        uart_gamepad_report(0, 0, 0);
+    }
+}
+
+/* Press then release a single button (0-indexed). */
+static void send_button(int btn_index)
+{
+    const uint16_t mask = (uint16_t)(1u << btn_index);
+    uart_gamepad_report(0, 0, mask);
+    vTaskDelay(pdMS_TO_TICKS(BUTTON_MS));
+    uart_gamepad_report(0, 0, 0);
+}
+
+/* Toggle operating mode and update the UI label. */
+static void toggle_mode(void)
+{
+    tc_mode_t new_mode =
+        (s_mode == MODE_VERTICAL) ? MODE_HORIZONTAL : MODE_VERTICAL;
+    s_mode = new_mode;
+
+    if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+        ui_update_mode(new_mode);
+        lvgl_port_unlock();
+    }
+    ESP_LOGI(TAG, "Mode: %s",
+             (new_mode == MODE_VERTICAL) ? "VERTICAL" : "HORIZONTAL");
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Touch gesture detection task
+ *
+ * State machine:
+ *   IDLE  → TOUCHING  on first touch sample
+ *   TOUCHING → IDLE   on touch release; gesture is classified then.
+ *
+ * Gesture rules:
+ *   displacement < TAP_MAX_MOVE_PX:
+ *       duration ≥ LONG_TAP_MS  → mode toggle
+ *       duration  < LONG_TAP_MS → short tap
+ *           start_y < LCD_V_RES/2  → BTN1
+ *           start_y ≥ LCD_V_RES/2  → BTN0
+ *   |dy| ≥ SLIDE_MIN_PX (and |dy| > |dx|):
+ *       dy < 0 (up)   → positive impulse
+ *       dy > 0 (down) → negative impulse
+ * ───────────────────────────────────────────────────────────────────── */
+static void touch_task(void *arg)
+{
+    bool     was_touching = false;
+    uint16_t start_x = 0, start_y = 0;
+    uint16_t last_x  = 0, last_y  = 0;
+    int64_t  start_ms = 0;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+
+        if (!s_touch) {
+            continue;
+        }
+
+        esp_lcd_touch_read_data(s_touch);
+
+        uint16_t x = 0, y = 0, strength = 0;
+        uint8_t  num_pts = 0;
+        bool touched = esp_lcd_touch_get_coordinates(
+                           s_touch, &x, &y, &strength, &num_pts, 1);
+        touched = touched && (num_pts > 0);
+
+        if (touched) {
+            last_x = x;
+            last_y = y;
+        }
+
+        if (touched && !was_touching) {
+            /* ── Touch start ── */
+            start_x  = x;
+            start_y  = y;
+            start_ms = esp_timer_get_time() / 1000LL;
+            was_touching = true;
+            ESP_LOGD(TAG, "touch start (%u,%u)", x, y);
+
+        } else if (!touched && was_touching) {
+            /* ── Touch end — classify gesture ── */
+            was_touching = false;
+            int64_t dur_ms = (esp_timer_get_time() / 1000LL) - start_ms;
+
+            int dx   = (int)last_x - (int)start_x;
+            int dy   = (int)last_y - (int)start_y;
+            int adx  = dx < 0 ? -dx : dx;
+            int ady  = dy < 0 ? -dy : dy;
+            int dist = adx > ady ? adx : ady;
+
+            ESP_LOGD(TAG, "touch end (%u,%u) dur=%lldms dx=%d dy=%d",
+                     last_x, last_y, dur_ms, dx, dy);
+
+            if (dist < TAP_MAX_MOVE_PX) {
+                /* Tap gesture */
+                if (dur_ms >= (int64_t)LONG_TAP_MS) {
+                    toggle_mode();
+                } else {
+                    /* Short tap: upper half → BTN1, lower half → BTN0 */
+                    if (start_y < LCD_V_RES / 2) {
+                        send_button(1);
+                    } else {
+                        send_button(0);
+                    }
+                }
+            } else if (ady >= SLIDE_MIN_PX && ady >= adx) {
+                /* Vertical slide */
+                if (dy < 0) {
+                    /* Slide up → positive axis */
+                    send_axis_impulse(32767);
+                } else {
+                    /* Slide down → negative axis */
+                    send_axis_impulse(-32767);
+                }
+            }
+            /* Mostly horizontal slides are ignored. */
+        }
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * app_main
+ * ───────────────────────────────────────────────────────────────────── */
+void app_main(void)
+{
+    ESP_LOGI(TAG, "ESP32 Touch Controller starting");
+
+    hw_lcd_init();
+    hw_touch_init();
+    lvgl_setup();
+
+    /* Build UI inside the LVGL lock (-1 = wait indefinitely until LVGL task
+     * gives up the mutex, which it does during its sleep phase).           */
+    if (lvgl_port_lock(-1)) {
+        ui_create();
+        lvgl_port_unlock();
+    }
+
+    ESP_ERROR_CHECK(uart_gamepad_init());
+
+    xTaskCreate(touch_task, "touch", 4096, NULL, 5, NULL);
+
+    ESP_LOGI(TAG, "Running — initial mode: VERTICAL");
+}

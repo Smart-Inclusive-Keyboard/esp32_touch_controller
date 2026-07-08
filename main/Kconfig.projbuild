@@ -1,0 +1,100 @@
+menu "Touch Controller"
+
+# ──────────────────────────────────────────────────────────────────────
+# Hardware board selection.
+# Each entry "select"s the internal capability flags used by main.c.
+# To add a new board: add a config entry here, add a matching
+# #ifdef CONFIG_TC_BOARD_<NAME> block in main/main.c with the correct
+# pin definitions.
+# ──────────────────────────────────────────────────────────────────────
+
+choice TC_BOARD
+    prompt "Hardware board"
+    default TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
+    help
+        Selects the hardware board the firmware is built for.
+        The board choice determines all pin assignments and any
+        board-specific initialisation parameters.
+
+config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
+    bool "Waveshare ESP32-C6-Touch-LCD-1.47"
+    depends on IDF_TARGET_ESP32C6
+    help
+        Waveshare ESP32-C6-Touch-LCD-1.47 development board.
+        1.47 inch 172x320 portrait IPS LCD with JD9853 SPI
+        controller and AXS5106L capacitive touch (I2C).
+
+        LCD SPI (SPI2): SCLK=GPIO1, MOSI=GPIO2, MISO=GPIO3,
+                        CS=GPIO14, DC=GPIO15, RST=GPIO22, BL=GPIO23.
+        Touch I2C (I2C0): SDA=GPIO18, SCL=GPIO19, INT=GPIO21, RST=GPIO20.
+        UART gamepad TX: GPIO13 (CONFIG_TC_UART_TX_GPIO default).
+
+endchoice
+
+# ──────────────────────────────────────────────────────────────────────
+# UART gamepad output
+# ──────────────────────────────────────────────────────────────────────
+
+menu "UART Gamepad Output"
+
+config TC_UART_TX_GPIO
+    int "UART TX GPIO number"
+    default 13
+    range 0 30
+    help
+        GPIO pin driven as the transmit-only UART output that streams
+        6-byte HID gamepad reports to the esp32s3_smart_keyboard.
+        GPIO 13 is the default for the Waveshare C6 Touch LCD 1.47.
+        Note: on ESP32-C6, GPIOs 12-17 are used by the embedded
+        flash/PSRAM and should not be used for other functions.
+        GPIOs 26-27 are reserved for USB D+/D-.
+
+config TC_UART_BAUD
+    int "Baud rate"
+    default 115200
+    help
+        Baud rate of the 8-N-1 UART link.  Must match the baud rate
+        configured in the receiving esp32s3_smart_keyboard firmware
+        (SK_GAMEPAD_UART_BAUD, default 115200).
+
+endmenu  # UART Gamepad Output
+
+# ──────────────────────────────────────────────────────────────────────
+# Gesture detection thresholds
+# ──────────────────────────────────────────────────────────────────────
+
+menu "Gesture thresholds"
+
+config TC_SLIDE_MIN_PX
+    int "Minimum slide distance (pixels)"
+    range 5 150
+    default 25
+    help
+        Minimum touch travel in pixels (in the primary direction)
+        needed to classify a gesture as a slide rather than a tap.
+        Reducing this value makes slides easier to trigger but more
+        prone to false positives on taps.
+
+config TC_TAP_MAX_MOVE_PX
+    int "Maximum tap movement (pixels)"
+    range 2 50
+    default 15
+    help
+        Maximum total touch displacement in pixels while the finger
+        is down for the gesture to still be classified as a tap.
+        Must be smaller than TC_SLIDE_MIN_PX for unambiguous
+        gesture separation.
+
+config TC_LONG_TAP_MS
+    int "Long-tap threshold (milliseconds)"
+    range 200 3000
+    default 500
+    help
+        Minimum contact duration in milliseconds for a stationary
+        touch (displacement < TC_TAP_MAX_MOVE_PX) to be classified
+        as a long tap, which switches between horizontal and
+        vertical operating modes.
+
+endmenu  # Gesture thresholds
+
+endmenu  # Touch Controller
