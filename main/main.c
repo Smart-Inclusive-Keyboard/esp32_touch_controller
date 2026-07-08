@@ -7,22 +7,27 @@
  *
  * Hardware (Waveshare ESP32-C6-Touch-LCD-1.47, verified):
  *   LCD  JD9853  SPI2   SCLK=1 MOSI=2 MISO=3  CS=14 DC=15 RST=22 BL=23
- *                172×320 portrait, column gap=34, colour-inversion on
+ *                172x320 portrait, column gap=34, colour-inversion on
  *   Touch AXS5106L  I2C0  SDA=18 SCL=19 INT=21 RST=20  addr=0x63
  *   UART  TX=GPIO13  115200 8-N-1  (gamepad HID output)
  *
- * Gesture → HID mapping
- *   Slide up        positive axis impulse (+32767 for 100 ms then 0)
- *   Slide down      negative axis impulse (-32767 for 100 ms then 0)
+ * Gesture -> HID mapping
+ *   Slide up        negative axis impulse (-32767 for 100 ms then 0)
+ *   Slide down      positive axis impulse (+32767 for 100 ms then 0)
  *   Short tap upper half  Button 1 press + release
  *   Short tap lower half  Button 0 press + release
- *   Long tap (≥500 ms)    toggle VERTICAL / HORIZONTAL mode
+ *   Long tap (>=500 ms)    toggle VERTICAL / HORIZONTAL mode
+ *
+ * A slide spanning the full length of the screen emits several axis
+ * events (CONFIG_TC_SLIDE_FULL_EVENTS, default 3); shorter slides emit
+ * proportionally fewer events.
  *
  * In VERTICAL mode the impulse is sent on the Y axis; in HORIZONTAL
  * mode it is sent on the X axis.
  *
- * The screen shows a schematic navigation guide and the current mode
- * (black background, thin white lines).
+ * The screen shows a schematic navigation guide.  The current mode is
+ * indicated by a bright edge line: along the right edge in VERTICAL
+ * mode and along the top edge in HORIZONTAL mode.
  */
 
 #include <string.h>
@@ -51,9 +56,9 @@
 
 static const char *TAG = "tc";
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Board-specific pin definitions
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 #ifdef CONFIG_TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
 
 /* LCD SPI (SPI2) */
@@ -84,9 +89,9 @@ static const char *TAG = "tc";
 
 #endif /* CONFIG_TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147 */
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Application constants
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 #define DRAW_BUF_LINES  50    /* LVGL DMA draw buffer height in lines */
 #define TOUCH_POLL_MS   20    /* touch polling interval               */
 #define IMPULSE_MS      100   /* axis impulse duration                */
@@ -95,25 +100,27 @@ static const char *TAG = "tc";
 #define SLIDE_MIN_PX    CONFIG_TC_SLIDE_MIN_PX
 #define TAP_MAX_MOVE_PX CONFIG_TC_TAP_MAX_MOVE_PX
 #define LONG_TAP_MS     CONFIG_TC_LONG_TAP_MS
+#define SLIDE_FULL_EVENTS CONFIG_TC_SLIDE_FULL_EVENTS
 
 typedef enum {
     MODE_VERTICAL,
     MODE_HORIZONTAL,
 } tc_mode_t;
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Module-level state
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 static esp_lcd_panel_io_handle_t s_io_handle;
 static esp_lcd_panel_handle_t    s_panel;
 static esp_lcd_touch_handle_t    s_touch;
 static lv_disp_t                *s_disp;
-static lv_obj_t                 *s_lbl_mode;   /* updated on mode change */
+static lv_obj_t                 *s_line_right;  /* shown in VERTICAL mode   */
+static lv_obj_t                 *s_line_top;    /* shown in HORIZONTAL mode */
 static volatile tc_mode_t        s_mode = MODE_VERTICAL;
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Hardware initialisation
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 static void hw_lcd_init(void)
 {
     /* SPI bus */
@@ -148,7 +155,7 @@ static void hw_lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
-    /* Backlight — full brightness */
+    /* Backlight -- full brightness */
     const ledc_timer_config_t ledc_timer = {
         .speed_mode      = BL_LEDC_MODE,
         .timer_num       = BL_LEDC_TIMER,
@@ -211,7 +218,7 @@ static void hw_touch_init(void)
         },
     };
 
-    /* Retry — controller may be slow to wake after power-on. */
+    /* Retry -- controller may be slow to wake after power-on. */
     for (int attempt = 1; attempt <= 6; attempt++) {
         esp_err_t err = esp_lcd_touch_new_i2c_axs5106(dev, &tp_cfg, &s_touch);
         if (err == ESP_OK) {
@@ -222,12 +229,12 @@ static void hw_touch_init(void)
         vTaskDelay(pdMS_TO_TICKS(80));
     }
     s_touch = NULL;
-    ESP_LOGW(TAG, "Touch unavailable — gesture input disabled");
+    ESP_LOGW(TAG, "Touch unavailable -- gesture input disabled");
 }
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * LVGL setup
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 static void lvgl_setup(void)
 {
     const lvgl_port_cfg_t lvgl_cfg = {
@@ -262,27 +269,30 @@ static void lvgl_setup(void)
     s_disp = lvgl_port_add_disp(&disp_cfg);
 }
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Navigation guide UI (schematic style: black background, thin lines)
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 
 /*
- * Screen layout (172 × 320 portrait):
+ * Screen layout (172 x 320 portrait):
  *
- *  ┌─────────────────────────────┐  y=0
- *  │            ↑                │       up-arrow  (slide = positive axis)
- *  │                             │
- *  │         BTN 1               │       upper half — tap triggers Button 1
- *  │                             │
- *  ├─────────────────────────────┤  y=160  centre divider
- *  │                             │
- *  │         BTN 0               │       lower half — tap triggers Button 0
- *  │                             │
- *  │            ↓                │       down-arrow (slide = negative axis)
- *  ├─────────────────────────────┤  y~294  mode separator
- *  │  MODE: VERTICAL             │       mode indicator
- *  └─────────────────────────────┘  y=320
+ *  +-----------------------------+  y=0     top edge line = HORIZONTAL mode
+ *  |            ^                |       up-arrow  (slide = negative axis)
+ *  |                             |
+ *  |         BTN 1               |       upper half -- tap triggers Button 1
+ *  |                             ||      right edge line = VERTICAL mode
+ *  +-----------------------------+  y=160  centre divider
+ *  |                             ||
+ *  |         BTN 0               |       lower half -- tap triggers Button 0
+ *  |                             |
+ *  |            v                |       down-arrow (slide = positive axis)
+ *  +-----------------------------+  y=320
+ *
+ * The current mode is shown by a bright edge line: right edge in
+ * VERTICAL mode, top edge in HORIZONTAL mode.
  */
+static void ui_update_mode(tc_mode_t mode);
+
 static void ui_create(void)
 {
     lv_obj_t *scr = lv_scr_act();
@@ -298,7 +308,14 @@ static void ui_create(void)
     lv_style_set_line_width(&st_line, 1);
     lv_style_set_line_opa(&st_line, LV_OPA_COVER);
 
-    /* ── Up arrow — top of screen ── */
+    /* Thicker style for the bright mode-indicator edge line */
+    static lv_style_t st_edge;
+    lv_style_init(&st_edge);
+    lv_style_set_line_color(&st_edge, lv_color_white());
+    lv_style_set_line_width(&st_edge, 4);
+    lv_style_set_line_opa(&st_edge, LV_OPA_COVER);
+
+    /* -- Up arrow -- top of screen -- */
     lv_obj_t *lbl_up = lv_label_create(scr);
     lv_label_set_text(lbl_up, LV_SYMBOL_UP);
     lv_obj_set_style_text_color(lbl_up, lv_color_white(), 0);
@@ -310,7 +327,7 @@ static void ui_create(void)
     lv_obj_set_style_text_color(lbl_btn1, lv_color_white(), 0);
     lv_obj_align(lbl_btn1, LV_ALIGN_TOP_MID, 0, 70);
 
-    /* ── Centre divider line ── */
+    /* -- Centre divider line -- */
     static lv_point_t div_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
     lv_obj_t *divider = lv_line_create(scr);
     lv_obj_add_style(divider, &st_line, 0);
@@ -324,37 +341,45 @@ static void ui_create(void)
     lv_obj_set_style_text_color(lbl_btn0, lv_color_white(), 0);
     lv_obj_align(lbl_btn0, LV_ALIGN_CENTER, 0, 60);
 
-    /* ── Down arrow — bottom area ── */
+    /* -- Down arrow -- bottom area -- */
     lv_obj_t *lbl_dn = lv_label_create(scr);
     lv_label_set_text(lbl_dn, LV_SYMBOL_DOWN);
     lv_obj_set_style_text_color(lbl_dn, lv_color_white(), 0);
-    lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -44);
+    lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
 
-    /* ── Mode separator line ── */
-    static lv_point_t sep_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
-    lv_obj_t *sep = lv_line_create(scr);
-    lv_obj_add_style(sep, &st_line, 0);
-    lv_line_set_points(sep, sep_pts, 2);
-    lv_obj_set_pos(sep, 0, LCD_V_RES - 27);
+    /* -- Mode indicator: line along the right edge (VERTICAL mode) -- */
+    static lv_point_t right_pts[2] = {{0, 0}, {0, LCD_V_RES - 1}};
+    s_line_right = lv_line_create(scr);
+    lv_obj_add_style(s_line_right, &st_edge, 0);
+    lv_line_set_points(s_line_right, right_pts, 2);
+    lv_obj_set_pos(s_line_right, LCD_H_RES - 2, 0);
 
-    /* ── Mode label ── */
-    s_lbl_mode = lv_label_create(scr);
-    lv_label_set_text(s_lbl_mode, "MODE: VERTICAL");
-    lv_obj_set_style_text_color(s_lbl_mode, lv_color_white(), 0);
-    lv_obj_align(s_lbl_mode, LV_ALIGN_BOTTOM_MID, 0, -8);
+    /* -- Mode indicator: line along the top edge (HORIZONTAL mode) -- */
+    static lv_point_t top_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
+    s_line_top = lv_line_create(scr);
+    lv_obj_add_style(s_line_top, &st_edge, 0);
+    lv_line_set_points(s_line_top, top_pts, 2);
+    lv_obj_set_pos(s_line_top, 0, 0);
+
+    /* Initial mode is VERTICAL: show right edge, hide top edge. */
+    ui_update_mode(s_mode);
 }
 
 static void ui_update_mode(tc_mode_t mode)
 {
     /* Must be called with the LVGL port lock held. */
-    lv_label_set_text(s_lbl_mode,
-                      (mode == MODE_VERTICAL) ? "MODE: VERTICAL"
-                                              : "MODE: HORIZONTAL");
+    if (mode == MODE_VERTICAL) {
+        lv_obj_clear_flag(s_line_right, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_line_top, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_line_right, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_line_top, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Gamepad event dispatch helpers
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 
 /* Send an impulse on the active axis: max value for IMPULSE_MS, then 0. */
 static void send_axis_impulse(int16_t value)
@@ -367,6 +392,34 @@ static void send_axis_impulse(int16_t value)
         uart_gamepad_report(value, 0, 0);
         vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
         uart_gamepad_report(0, 0, 0);
+    }
+}
+
+/*
+ * Emit a run of axis impulses on the active axis.  A slide that covers
+ * the full length of the screen produces SLIDE_FULL_EVENTS impulses;
+ * shorter slides produce proportionally fewer (always at least one).
+ * The consecutive impulses are separated by an idle gap so the receiver
+ * registers them as distinct navigation steps.
+ */
+static void send_axis_impulses(int16_t value, int span_px, int full_px)
+{
+    int count = 1;
+    if (full_px > 0) {
+        count = (span_px * SLIDE_FULL_EVENTS) / full_px;
+    }
+    if (count < 1) {
+        count = 1;
+    }
+    if (count > SLIDE_FULL_EVENTS) {
+        count = SLIDE_FULL_EVENTS;
+    }
+
+    for (int i = 0; i < count; i++) {
+        send_axis_impulse(value);
+        if (i + 1 < count) {
+            vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
+        }
     }
 }
 
@@ -394,23 +447,25 @@ static void toggle_mode(void)
              (new_mode == MODE_VERTICAL) ? "VERTICAL" : "HORIZONTAL");
 }
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * Touch gesture detection task
  *
  * State machine:
- *   IDLE  → TOUCHING  on first touch sample
- *   TOUCHING → IDLE   on touch release; gesture is classified then.
+ *   IDLE  -> TOUCHING  on first touch sample
+ *   TOUCHING -> IDLE   on touch release; gesture is classified then.
  *
  * Gesture rules:
  *   displacement < TAP_MAX_MOVE_PX:
- *       duration ≥ LONG_TAP_MS  → mode toggle
- *       duration  < LONG_TAP_MS → short tap
- *           start_y < LCD_V_RES/2  → BTN1
- *           start_y ≥ LCD_V_RES/2  → BTN0
- *   |dy| ≥ SLIDE_MIN_PX (and |dy| > |dx|):
- *       dy < 0 (up)   → positive impulse
- *       dy > 0 (down) → negative impulse
- * ───────────────────────────────────────────────────────────────────── */
+ *       duration >= LONG_TAP_MS  -> mode toggle
+ *       duration  < LONG_TAP_MS -> short tap
+ *           start_y < LCD_V_RES/2  -> BTN1
+ *           start_y >= LCD_V_RES/2  -> BTN0
+ *   |dy| >= SLIDE_MIN_PX (and |dy| > |dx|):
+ *       dy < 0 (up)   -> negative impulse(s)
+ *       dy > 0 (down) -> positive impulse(s)
+ *       The number of impulses scales with the slide length, up to
+ *       SLIDE_FULL_EVENTS for a full-screen slide.
+ * --------------------------------------------------------------------- */
 static void touch_task(void *arg)
 {
     bool     was_touching = false;
@@ -439,7 +494,7 @@ static void touch_task(void *arg)
         }
 
         if (touched && !was_touching) {
-            /* ── Touch start ── */
+            /* -- Touch start -- */
             start_x  = x;
             start_y  = y;
             start_ms = esp_timer_get_time() / 1000LL;
@@ -447,7 +502,7 @@ static void touch_task(void *arg)
             ESP_LOGD(TAG, "touch start (%u,%u)", x, y);
 
         } else if (!touched && was_touching) {
-            /* ── Touch end — classify gesture ── */
+            /* -- Touch end -- classify gesture -- */
             was_touching = false;
             int64_t dur_ms = (esp_timer_get_time() / 1000LL) - start_ms;
 
@@ -465,7 +520,7 @@ static void touch_task(void *arg)
                 if (dur_ms >= (int64_t)LONG_TAP_MS) {
                     toggle_mode();
                 } else {
-                    /* Short tap: upper half → BTN1, lower half → BTN0 */
+                    /* Short tap: upper half -> BTN1, lower half -> BTN0 */
                     if (start_y < LCD_V_RES / 2) {
                         send_button(1);
                     } else {
@@ -473,13 +528,14 @@ static void touch_task(void *arg)
                     }
                 }
             } else if (ady >= SLIDE_MIN_PX && ady >= adx) {
-                /* Vertical slide */
+                /* Vertical slide -- reversed navigation direction.
+                 * Number of axis events scales with the slide length. */
                 if (dy < 0) {
-                    /* Slide up → positive axis */
-                    send_axis_impulse(32767);
+                    /* Slide up -> negative axis */
+                    send_axis_impulses(-32767, ady, LCD_V_RES);
                 } else {
-                    /* Slide down → negative axis */
-                    send_axis_impulse(-32767);
+                    /* Slide down -> positive axis */
+                    send_axis_impulses(32767, ady, LCD_V_RES);
                 }
             }
             /* Mostly horizontal slides are ignored. */
@@ -487,9 +543,9 @@ static void touch_task(void *arg)
     }
 }
 
-/* ─────────────────────────────────────────────────────────────────────
+/* ---------------------------------------------------------------------
  * app_main
- * ───────────────────────────────────────────────────────────────────── */
+ * --------------------------------------------------------------------- */
 void app_main(void)
 {
     ESP_LOGI(TAG, "ESP32 Touch Controller starting");
@@ -509,5 +565,5 @@ void app_main(void)
 
     xTaskCreate(touch_task, "touch", 4096, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "Running — initial mode: VERTICAL");
+    ESP_LOGI(TAG, "Running -- initial mode: VERTICAL");
 }

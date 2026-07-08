@@ -31,7 +31,7 @@ esp_err_t uart_gamepad_init(void)
     };
 
     /* tx_buffer_size=0: uart_write_bytes() blocks until data enters
-     * the hardware FIFO — acceptable for our tiny 6-byte bursts.    */
+     * the hardware FIFO -- acceptable for our tiny 6-byte bursts.    */
     esp_err_t err = uart_driver_install(UART_GP_PORT, UART_GP_RX_BUF,
                                         0, 0, NULL, 0);
     if (err != ESP_OK) {
@@ -45,7 +45,7 @@ esp_err_t uart_gamepad_init(void)
         return err;
     }
 
-    /* TX only — leave RX/RTS/CTS unassigned. */
+    /* TX only -- leave RX/RTS/CTS unassigned. */
     err = uart_set_pin(UART_GP_PORT, CONFIG_TC_UART_TX_GPIO,
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
                        UART_PIN_NO_CHANGE);
