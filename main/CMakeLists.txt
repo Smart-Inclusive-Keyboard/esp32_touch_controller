@@ -5,6 +5,8 @@ idf_component_register(
         driver
         esp_lcd
         esp_timer
+        esp_driver_ledc
+        esp_driver_uart
         esp_lcd_jd9853
         esp_lcd_touch_axs5106
         espressif__esp_lvgl_port
