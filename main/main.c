@@ -498,8 +498,9 @@ void app_main(void)
     hw_touch_init();
     lvgl_setup();
 
-    /* Build UI inside the LVGL lock */
-    if (lvgl_port_lock(0)) {
+    /* Build UI inside the LVGL lock (-1 = wait indefinitely until LVGL task
+     * gives up the mutex, which it does during its sleep phase).           */
+    if (lvgl_port_lock(-1)) {
         ui_create();
         lvgl_port_unlock();
     }

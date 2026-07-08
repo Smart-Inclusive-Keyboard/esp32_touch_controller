@@ -162,7 +162,7 @@ static esp_err_t panel_jd9853_reset(esp_lcd_panel_t *panel)
 
 /* Default init sequence validated on Waveshare ESP32-C6-Touch-LCD-1.47 */
 static const jd9853_lcd_init_cmd_t vendor_specific_init_default[] = {
-    {0x11, (uint8_t []){0x00}, 0, 120},
+    {0x11, NULL, 0, 120},
     {0xDF, (uint8_t []){0x98, 0x53}, 2, 0},
     {0xDF, (uint8_t []){0x98, 0x53}, 2, 0},
     {0xB2, (uint8_t []){0x23}, 1, 0},
@@ -197,7 +197,7 @@ static const jd9853_lcd_init_cmd_t vendor_specific_init_default[] = {
     {0xDE, (uint8_t []){0x02}, 1, 0},
     {0xE5, (uint8_t []){0x00, 0x02, 0x00}, 3, 0},
     {0xDE, (uint8_t []){0x00}, 1, 0},
-    {0x29, (uint8_t []){0x00}, 0, 0},
+    {0x29, NULL, 0, 0},
 };
 
 static esp_err_t panel_jd9853_init(esp_lcd_panel_t *panel)

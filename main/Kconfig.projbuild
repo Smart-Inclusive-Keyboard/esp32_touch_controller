@@ -40,11 +40,14 @@ menu "UART Gamepad Output"
 config TC_UART_TX_GPIO
     int "UART TX GPIO number"
     default 13
-    range 0 22
+    range 0 30
     help
         GPIO pin driven as the transmit-only UART output that streams
         6-byte HID gamepad reports to the esp32s3_smart_keyboard.
         GPIO 13 is the default for the Waveshare C6 Touch LCD 1.47.
+        Note: on ESP32-C6, GPIOs 12-17 are used by the embedded
+        flash/PSRAM and should not be used for other functions.
+        GPIOs 26-27 are reserved for USB D+/D-.
 
 config TC_UART_BAUD
     int "Baud rate"
