@@ -16,7 +16,9 @@
  *   Slide down      positive axis impulse (+32767 for 100 ms then 0)
  *   Short tap upper half  Button 1 press + release
  *   Short tap lower half  Button 0 press + release
- *   Long tap (>=500 ms)    toggle VERTICAL / HORIZONTAL mode
+ *   Long tap (>=TC_LONG_TAP_MS) toggle VERTICAL / HORIZONTAL mode
+ *                          (fires as soon as the threshold elapses,
+ *                          without waiting for the finger to lift)
  *
  * A slide spanning the full length of the screen emits several axis
  * events (CONFIG_TC_SLIDE_FULL_EVENTS, default 3); shorter slides emit
@@ -27,7 +29,10 @@
  *
  * The screen shows a schematic navigation guide.  The current mode is
  * indicated by a bright edge line: along the right edge in VERTICAL
- * mode and along the top edge in HORIZONTAL mode.
+ * mode and along the top edge in HORIZONTAL mode.  While sliding the
+ * active edge line is highlighted, and a tapped button label is
+ * highlighted, using CONFIG_TC_COLOR_HIGHLIGHT.  Backlight brightness
+ * and the interface colours are configurable (see Kconfig).
  */
 
 #include <string.h>
@@ -96,11 +101,17 @@ static const char *TAG = "tc";
 #define TOUCH_POLL_MS   20    /* touch polling interval               */
 #define IMPULSE_MS      100   /* axis impulse duration                */
 #define BUTTON_MS       50    /* button press duration                */
+#define HIGHLIGHT_MS    150   /* minimum on-screen highlight duration */
 
 #define SLIDE_MIN_PX    CONFIG_TC_SLIDE_MIN_PX
 #define TAP_MAX_MOVE_PX CONFIG_TC_TAP_MAX_MOVE_PX
 #define LONG_TAP_MS     CONFIG_TC_LONG_TAP_MS
 #define SLIDE_FULL_EVENTS CONFIG_TC_SLIDE_FULL_EVENTS
+
+/* Interface colours (24-bit 0xRRGGBB, from Kconfig). */
+#define COLOR_BG        lv_color_hex(CONFIG_TC_COLOR_BACKGROUND)
+#define COLOR_FG        lv_color_hex(CONFIG_TC_COLOR_FOREGROUND)
+#define COLOR_HL        lv_color_hex(CONFIG_TC_COLOR_HIGHLIGHT)
 
 typedef enum {
     MODE_VERTICAL,
@@ -116,6 +127,8 @@ static esp_lcd_touch_handle_t    s_touch;
 static lv_disp_t                *s_disp;
 static lv_obj_t                 *s_line_right;  /* shown in VERTICAL mode   */
 static lv_obj_t                 *s_line_top;    /* shown in HORIZONTAL mode */
+static lv_obj_t                 *s_lbl_btn1;    /* upper-half button label  */
+static lv_obj_t                 *s_lbl_btn0;    /* lower-half button label  */
 static volatile tc_mode_t        s_mode = MODE_VERTICAL;
 
 /* ---------------------------------------------------------------------
@@ -155,7 +168,7 @@ static void hw_lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
-    /* Backlight -- full brightness */
+    /* Backlight -- brightness from CONFIG_TC_SCREEN_BRIGHTNESS (percent) */
     const ledc_timer_config_t ledc_timer = {
         .speed_mode      = BL_LEDC_MODE,
         .timer_num       = BL_LEDC_TIMER,
@@ -165,13 +178,17 @@ static void hw_lcd_init(void)
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
+    const uint32_t bl_max_duty = (1u << BL_LEDC_DUTY_RES) - 1u;
+    const uint32_t bl_duty =
+        (bl_max_duty * (uint32_t)CONFIG_TC_SCREEN_BRIGHTNESS) / 100u;
+
     const ledc_channel_config_t ledc_ch = {
         .speed_mode = BL_LEDC_MODE,
         .channel    = BL_LEDC_CH,
         .timer_sel  = BL_LEDC_TIMER,
         .intr_type  = LEDC_INTR_DISABLE,
         .gpio_num   = LCD_BL,
-        .duty       = (1u << BL_LEDC_DUTY_RES) - 1u, /* 100% */
+        .duty       = bl_duty,
         .hpoint     = 0,
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_ch));
@@ -297,35 +314,35 @@ static void ui_create(void)
 {
     lv_obj_t *scr = lv_scr_act();
 
-    /* Black background */
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    /* Configurable background */
+    lv_obj_set_style_bg_color(scr, COLOR_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    /* Shared style for thin white lines */
+    /* Shared style for thin foreground lines */
     static lv_style_t st_line;
     lv_style_init(&st_line);
-    lv_style_set_line_color(&st_line, lv_color_white());
+    lv_style_set_line_color(&st_line, COLOR_FG);
     lv_style_set_line_width(&st_line, 1);
     lv_style_set_line_opa(&st_line, LV_OPA_COVER);
 
     /* Thicker style for the bright mode-indicator edge line */
     static lv_style_t st_edge;
     lv_style_init(&st_edge);
-    lv_style_set_line_color(&st_edge, lv_color_white());
+    lv_style_set_line_color(&st_edge, COLOR_FG);
     lv_style_set_line_width(&st_edge, 4);
     lv_style_set_line_opa(&st_edge, LV_OPA_COVER);
 
     /* -- Up arrow -- top of screen -- */
     lv_obj_t *lbl_up = lv_label_create(scr);
     lv_label_set_text(lbl_up, LV_SYMBOL_UP);
-    lv_obj_set_style_text_color(lbl_up, lv_color_white(), 0);
+    lv_obj_set_style_text_color(lbl_up, COLOR_FG, 0);
     lv_obj_align(lbl_up, LV_ALIGN_TOP_MID, 0, 10);
 
     /* "BTN 1" label in upper half */
-    lv_obj_t *lbl_btn1 = lv_label_create(scr);
-    lv_label_set_text(lbl_btn1, "BTN 1");
-    lv_obj_set_style_text_color(lbl_btn1, lv_color_white(), 0);
-    lv_obj_align(lbl_btn1, LV_ALIGN_TOP_MID, 0, 70);
+    s_lbl_btn1 = lv_label_create(scr);
+    lv_label_set_text(s_lbl_btn1, "BTN 1");
+    lv_obj_set_style_text_color(s_lbl_btn1, COLOR_FG, 0);
+    lv_obj_align(s_lbl_btn1, LV_ALIGN_TOP_MID, 0, 70);
 
     /* -- Centre divider line -- */
     static lv_point_t div_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
@@ -336,15 +353,15 @@ static void ui_create(void)
     lv_obj_set_pos(divider, 0, LCD_V_RES / 2);
 
     /* "BTN 0" label in lower half */
-    lv_obj_t *lbl_btn0 = lv_label_create(scr);
-    lv_label_set_text(lbl_btn0, "BTN 0");
-    lv_obj_set_style_text_color(lbl_btn0, lv_color_white(), 0);
-    lv_obj_align(lbl_btn0, LV_ALIGN_CENTER, 0, 60);
+    s_lbl_btn0 = lv_label_create(scr);
+    lv_label_set_text(s_lbl_btn0, "BTN 0");
+    lv_obj_set_style_text_color(s_lbl_btn0, COLOR_FG, 0);
+    lv_obj_align(s_lbl_btn0, LV_ALIGN_CENTER, 0, 60);
 
     /* -- Down arrow -- bottom area -- */
     lv_obj_t *lbl_dn = lv_label_create(scr);
     lv_label_set_text(lbl_dn, LV_SYMBOL_DOWN);
-    lv_obj_set_style_text_color(lbl_dn, lv_color_white(), 0);
+    lv_obj_set_style_text_color(lbl_dn, COLOR_FG, 0);
     lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     /* -- Mode indicator: line along the right edge (VERTICAL mode) -- */
@@ -374,6 +391,24 @@ static void ui_update_mode(tc_mode_t mode)
     } else {
         lv_obj_add_flag(s_line_right, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_line_top, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Set the colour of an edge line (foreground when not highlighted). */
+static void ui_line_highlight(lv_obj_t *line, bool on)
+{
+    if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+        lv_obj_set_style_line_color(line, on ? COLOR_HL : COLOR_FG, 0);
+        lvgl_port_unlock();
+    }
+}
+
+/* Set the colour of a button label (foreground when not highlighted). */
+static void ui_label_highlight(lv_obj_t *label, bool on)
+{
+    if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
+        lv_obj_set_style_text_color(label, on ? COLOR_HL : COLOR_FG, 0);
+        lvgl_port_unlock();
     }
 }
 
@@ -452,23 +487,28 @@ static void toggle_mode(void)
  *
  * State machine:
  *   IDLE  -> TOUCHING  on first touch sample
- *   TOUCHING -> IDLE   on touch release; gesture is classified then.
+ *   TOUCHING -> IDLE   on touch release; gesture is classified then,
+ *                      unless a long tap already fired during the hold.
  *
  * Gesture rules:
  *   displacement < TAP_MAX_MOVE_PX:
- *       duration >= LONG_TAP_MS  -> mode toggle
- *       duration  < LONG_TAP_MS -> short tap
+ *       held >= LONG_TAP_MS  -> mode toggle (fires immediately while the
+ *                               finger is still down, then the touch is
+ *                               consumed and ignored on release)
+ *       released < LONG_TAP_MS -> short tap (label highlighted)
  *           start_y < LCD_V_RES/2  -> BTN1
  *           start_y >= LCD_V_RES/2  -> BTN0
  *   |dy| >= SLIDE_MIN_PX (and |dy| > |dx|):
  *       dy < 0 (up)   -> negative impulse(s)
  *       dy > 0 (down) -> positive impulse(s)
  *       The number of impulses scales with the slide length, up to
- *       SLIDE_FULL_EVENTS for a full-screen slide.
+ *       SLIDE_FULL_EVENTS for a full-screen slide.  The active edge
+ *       line is highlighted for the duration of the slide.
  * --------------------------------------------------------------------- */
 static void touch_task(void *arg)
 {
     bool     was_touching = false;
+    bool     long_fired   = false;
     uint16_t start_x = 0, start_y = 0;
     uint16_t last_x  = 0, last_y  = 0;
     int64_t  start_ms = 0;
@@ -482,11 +522,11 @@ static void touch_task(void *arg)
 
         esp_lcd_touch_read_data(s_touch);
 
-        uint16_t x = 0, y = 0, strength = 0;
+        esp_lcd_touch_point_data_t point = {0};
         uint8_t  num_pts = 0;
-        bool touched = esp_lcd_touch_get_coordinates(
-                           s_touch, &x, &y, &strength, &num_pts, 1);
-        touched = touched && (num_pts > 0);
+        esp_lcd_touch_get_data(s_touch, &point, &num_pts, 1);
+        bool touched = (num_pts > 0);
+        uint16_t x = point.x, y = point.y;
 
         if (touched) {
             last_x = x;
@@ -499,11 +539,33 @@ static void touch_task(void *arg)
             start_y  = y;
             start_ms = esp_timer_get_time() / 1000LL;
             was_touching = true;
+            long_fired   = false;
             ESP_LOGD(TAG, "touch start (%u,%u)", x, y);
+
+        } else if (touched && was_touching && !long_fired) {
+            /* -- Touch held -- fire long tap as soon as the threshold
+             * elapses, without waiting for the finger to lift. -- */
+            int dx   = (int)last_x - (int)start_x;
+            int dy   = (int)last_y - (int)start_y;
+            int adx  = dx < 0 ? -dx : dx;
+            int ady  = dy < 0 ? -dy : dy;
+            int dist = adx > ady ? adx : ady;
+            int64_t held_ms = (esp_timer_get_time() / 1000LL) - start_ms;
+
+            if (dist < TAP_MAX_MOVE_PX && held_ms >= (int64_t)LONG_TAP_MS) {
+                toggle_mode();
+                long_fired = true;
+            }
 
         } else if (!touched && was_touching) {
             /* -- Touch end -- classify gesture -- */
             was_touching = false;
+
+            if (long_fired) {
+                /* Mode already switched during the hold; nothing to do. */
+                continue;
+            }
+
             int64_t dur_ms = (esp_timer_get_time() / 1000LL) - start_ms;
 
             int dx   = (int)last_x - (int)start_x;
@@ -516,20 +578,21 @@ static void touch_task(void *arg)
                      last_x, last_y, dur_ms, dx, dy);
 
             if (dist < TAP_MAX_MOVE_PX) {
-                /* Tap gesture */
-                if (dur_ms >= (int64_t)LONG_TAP_MS) {
-                    toggle_mode();
-                } else {
-                    /* Short tap: upper half -> BTN1, lower half -> BTN0 */
-                    if (start_y < LCD_V_RES / 2) {
-                        send_button(1);
-                    } else {
-                        send_button(0);
-                    }
-                }
+                /* Short tap: upper half -> BTN1, lower half -> BTN0.
+                 * (Long taps are handled during the hold above.)     */
+                lv_obj_t *lbl = (start_y < LCD_V_RES / 2)
+                                ? s_lbl_btn1 : s_lbl_btn0;
+                ui_label_highlight(lbl, true);
+                send_button((start_y < LCD_V_RES / 2) ? 1 : 0);
+                vTaskDelay(pdMS_TO_TICKS(HIGHLIGHT_MS));
+                ui_label_highlight(lbl, false);
             } else if (ady >= SLIDE_MIN_PX && ady >= adx) {
                 /* Vertical slide -- reversed navigation direction.
-                 * Number of axis events scales with the slide length. */
+                 * Number of axis events scales with the slide length.
+                 * Highlight the active mode's edge line meanwhile.   */
+                lv_obj_t *edge = (s_mode == MODE_VERTICAL)
+                                 ? s_line_right : s_line_top;
+                ui_line_highlight(edge, true);
                 if (dy < 0) {
                     /* Slide up -> negative axis */
                     send_axis_impulses(-32767, ady, LCD_V_RES);
@@ -537,6 +600,7 @@ static void touch_task(void *arg)
                     /* Slide down -> positive axis */
                     send_axis_impulses(32767, ady, LCD_V_RES);
                 }
+                ui_line_highlight(edge, false);
             }
             /* Mostly horizontal slides are ignored. */
         }

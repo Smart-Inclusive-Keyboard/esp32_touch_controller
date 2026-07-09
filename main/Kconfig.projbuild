@@ -32,6 +32,46 @@ config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
 endchoice
 
 # ----------------------------------------------------------------------
+# Display appearance
+# ----------------------------------------------------------------------
+
+menu "Display"
+
+config TC_SCREEN_BRIGHTNESS
+    int "Screen brightness (percent)"
+    range 0 100
+    default 50
+    help
+        Backlight brightness as a percentage of full scale, applied to
+        the LCD backlight PWM at start-up.  0 turns the backlight off,
+        100 drives it at full brightness.
+
+config TC_COLOR_BACKGROUND
+    hex "Background colour (0xRRGGBB)"
+    default 0x000000
+    help
+        Screen background colour as a 24-bit 0xRRGGBB value.
+        The default is black (0x000000).
+
+config TC_COLOR_FOREGROUND
+    hex "Foreground colour (0xRRGGBB)"
+    default 0x33ccff
+    help
+        Foreground colour used for the navigation guide lines, arrows
+        and button labels, as a 24-bit 0xRRGGBB value.
+        The default is 0x33ccff (light blue).
+
+config TC_COLOR_HIGHLIGHT
+    hex "Highlight colour (0xRRGGBB)"
+    default 0x3366ff
+    help
+        Highlight colour briefly applied to the active edge line while
+        sliding and to a button label while it is tapped, as a 24-bit
+        0xRRGGBB value.  The default is 0x3366ff (blue).
+
+endmenu  # Display
+
+# ----------------------------------------------------------------------
 # UART gamepad output
 # ----------------------------------------------------------------------
 
