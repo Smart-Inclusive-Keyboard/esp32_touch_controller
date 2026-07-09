@@ -36,9 +36,9 @@ esp_err_t uart_gamepad_init(void);
 /**
  * @brief Transmit one 6-byte HID gamepad report.
  *
- * @param axis_x   X-axis value (-32767 … +32767, 0 = centre).
- * @param axis_y   Y-axis value (-32767 … +32767, 0 = centre).
- * @param buttons  Bitmask of pressed buttons (bit 0 = button 0, …).
+ * @param axis_x   X-axis value (-32767 ... +32767, 0 = centre).
+ * @param axis_y   Y-axis value (-32767 ... +32767, 0 = centre).
+ * @param buttons  Bitmask of pressed buttons (bit 0 = button 0, ...).
  * @return ESP_OK on success, ESP_FAIL if the write was short.
  */
 esp_err_t uart_gamepad_report(int16_t axis_x, int16_t axis_y,

@@ -50,7 +50,7 @@ static bool      axs5106_get_xy(esp_lcd_touch_handle_t tp,
 static esp_err_t axs5106_del(esp_lcd_touch_handle_t tp);
 static esp_err_t axs5106_reset(esp_lcd_touch_handle_t tp);
 
-/* ── I2C helpers ──────────────────────────────────────────────────── */
+/* -- I2C helpers ---------------------------------------------------- */
 
 static esp_err_t i2c_read(uint8_t reg, uint8_t *data, uint8_t len)
 {
@@ -62,7 +62,7 @@ static esp_err_t i2c_read(uint8_t reg, uint8_t *data, uint8_t len)
     return i2c_master_receive(s_dev_handle, data, len, 100);
 }
 
-/* ── Driver implementation ───────────────────────────────────────── */
+/* -- Driver implementation ----------------------------------------- */
 
 esp_err_t esp_lcd_touch_new_i2c_axs5106(i2c_master_dev_handle_t dev_handle,
                                          const esp_lcd_touch_config_t *config,
@@ -86,7 +86,7 @@ esp_err_t esp_lcd_touch_new_i2c_axs5106(i2c_master_dev_handle_t dev_handle,
 
     memcpy(&tp->config, config, sizeof(esp_lcd_touch_config_t));
 
-    /* INT pin — input, falling-edge interrupt (active-low) */
+    /* INT pin -- input, falling-edge interrupt (active-low) */
     if (tp->config.int_gpio_num != GPIO_NUM_NC) {
         const gpio_config_t int_cfg = {
             .mode        = GPIO_MODE_INPUT,
@@ -103,7 +103,7 @@ esp_err_t esp_lcd_touch_new_i2c_axs5106(i2c_master_dev_handle_t dev_handle,
         }
     }
 
-    /* RST pin — output */
+    /* RST pin -- output */
     if (tp->config.rst_gpio_num != GPIO_NUM_NC) {
         const gpio_config_t rst_cfg = {
             .mode        = GPIO_MODE_OUTPUT,
