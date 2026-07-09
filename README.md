@@ -41,6 +41,14 @@ events; shorter slides produce proportionally fewer events (always at
 least one). The number of events for a full-length slide is configurable
 via `CONFIG_TC_SLIDE_FULL_EVENTS` (default 3).
 
+A long tap toggles the mode as soon as `CONFIG_TC_LONG_TAP_MS` elapses
+while the finger is still held down -- it does not wait for the finger to
+be lifted. Once the toggle has fired, the rest of that touch (including
+the eventual release) is ignored.
+
+While sliding, the active mode's edge line is highlighted; while a button
+is tapped, its label is highlighted. Both use `CONFIG_TC_COLOR_HIGHLIGHT`.
+
 ## Mode indicator
 
 The current mode is shown by a bright line along one edge of the screen:
@@ -66,6 +74,10 @@ Tunable options are exposed under **Touch Controller** in `menuconfig`:
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `TC_SCREEN_BRIGHTNESS` | 50 | Backlight brightness (percent) |
+| `TC_COLOR_BACKGROUND` | 0x000000 | Background colour (0xRRGGBB) |
+| `TC_COLOR_FOREGROUND` | 0x33ccff | Foreground colour (lines, labels) |
+| `TC_COLOR_HIGHLIGHT` | 0x3366ff | Highlight colour (slide / tap feedback) |
 | `TC_UART_TX_GPIO` | 13 | UART TX GPIO number |
 | `TC_UART_BAUD` | 115200 | UART baud rate |
 | `TC_SLIDE_MIN_PX` | 25 | Minimum travel to classify a slide |
