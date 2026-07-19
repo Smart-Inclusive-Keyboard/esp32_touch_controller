@@ -22,34 +22,36 @@ Waveshare ESP32-C6-Touch-LCD-1.47 (172x320 portrait IPS):
 |----------|-----|------|
 | LCD (JD9853) | SPI2 | SCLK=1, MOSI=2, MISO=3, CS=14, DC=15, RST=22, BL=23 |
 | Touch (AXS5106L) | I2C0 | SDA=18, SCL=19, INT=21, RST=20 (addr 0x63) |
-| Gamepad output | UART1 | TX=13, 115200 8-N-1, transmit-only |
+| Gamepad output | UART1 | TX=9, 115200 8-N-1, transmit-only |
 
 ## Button and mode inputs
 
-Eight pull-up inputs are configured (defaults GPIO1-GPIO8, all
-configurable in `menuconfig`):
+Up to seven pull-up button inputs plus a mode input are configured
+(defaults below, all configurable in `menuconfig`).  Buttons 4-6 are
+unassigned by default; set a button GPIO to `-1` to leave it unassigned:
 
 | Input | Default GPIO | Action |
 |-------|--------------|--------|
-| Button 0 | 1 | Game controller button 0 while pulled low |
-| Button 1 | 2 | Game controller button 1 while pulled low |
-| Button 2 | 3 | Game controller button 2 while pulled low |
-| Button 3 | 4 | Game controller button 3 while pulled low |
-| Button 4 | 5 | Game controller button 4 while pulled low |
-| Button 5 | 6 | Game controller button 5 while pulled low |
-| Button 6 | 7 | Game controller button 6 while pulled low |
+| Button 0 | 4 | Game controller button 0 while pulled low |
+| Button 1 | 5 | Game controller button 1 while pulled low |
+| Button 2 | 6 | Game controller button 2 while pulled low |
+| Button 3 | 7 | Game controller button 3 while pulled low |
+| Button 4 | -1 (unassigned) | Game controller button 4 while pulled low |
+| Button 5 | -1 (unassigned) | Game controller button 5 while pulled low |
+| Button 6 | -1 (unassigned) | Game controller button 6 while pulled low |
 | Mode | 8 | Select axis output mode (see below) |
 
 Each button GPIO is active low: pulling it to ground reports the
-corresponding game controller button as pressed.
+corresponding game controller button as pressed.  A button set to `-1`
+is skipped and never reports as pressed.
 
 The **mode** GPIO selects the axis output mode: left open (high) the
 controller runs in **impulse** mode; pulled low it switches to
 **continuous** mode.
 
-> Note: the default assignments (GPIO1-GPIO8) may overlap with the
-> board's LCD SPI pins; remap them in `menuconfig` to free pins as
-> required.
+> Note: the button GPIOs default to GPIO4-GPIO7 (buttons 0-3, with
+> buttons 4-6 unassigned) and the mode GPIO to GPIO8; remap them in
+> `menuconfig` to free pins as required.
 
 ## Gesture mapping
 
@@ -124,9 +126,9 @@ Tunable options are exposed under **Touch Controller** in `menuconfig`:
 | `TC_COLOR_HIGHLIGHT` | 0x3366ff | Impulse-mode slide highlight colour |
 | `TC_COLOR_CONTINUOUS_IDLE` | 0xffff00 | Continuous-mode idle indicator (yellow) |
 | `TC_COLOR_CONTINUOUS_ACTIVE` | 0xff8000 | Continuous-mode active indicator (orange) |
-| `TC_UART_TX_GPIO` | 13 | UART TX GPIO number |
+| `TC_UART_TX_GPIO` | 9 | UART TX GPIO number |
 | `TC_UART_BAUD` | 115200 | UART baud rate |
-| `TC_BTN0_GPIO` .. `TC_BTN6_GPIO` | 1 .. 7 | Button 0-6 input GPIO numbers |
+| `TC_BTN0_GPIO` .. `TC_BTN6_GPIO` | 4, 5, 6, 7, -1, -1, -1 | Button 0-6 input GPIO numbers (-1 = unassigned) |
 | `TC_MODE_GPIO` | 8 | Impulse/continuous mode input GPIO |
 | `TC_SLIDE_MIN_PX` | 25 | Minimum travel to classify a slide |
 | `TC_TAP_MAX_MOVE_PX` | 15 | Maximum movement for a long tap |

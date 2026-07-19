@@ -27,7 +27,7 @@ config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
         LCD SPI (SPI2): SCLK=GPIO1, MOSI=GPIO2, MISO=GPIO3,
                         CS=GPIO14, DC=GPIO15, RST=GPIO22, BL=GPIO23.
         Touch I2C (I2C0): SDA=GPIO18, SCL=GPIO19, INT=GPIO21, RST=GPIO20.
-        UART gamepad TX: GPIO13 (CONFIG_TC_UART_TX_GPIO default).
+        UART gamepad TX: GPIO9 (CONFIG_TC_UART_TX_GPIO default).
 
 endchoice
 
@@ -95,12 +95,12 @@ menu "UART Gamepad Output"
 
 config TC_UART_TX_GPIO
     int "UART TX GPIO number"
-    default 13
+    default 9
     range 0 30
     help
         GPIO pin driven as the transmit-only UART output that streams
         6-byte HID gamepad reports to the esp32s3_smart_keyboard.
-        GPIO 13 is the default for the Waveshare C6 Touch LCD 1.47.
+        GPIO 9 is the default for the Waveshare C6 Touch LCD 1.47.
         Note: on ESP32-C6, GPIOs 12-17 are used by the embedded
         flash/PSRAM and should not be used for other functions.
         GPIOs 26-27 are reserved for USB D+/D-.
@@ -123,59 +123,66 @@ menu "Button inputs"
 
 config TC_BTN0_GPIO
     int "Button 0 GPIO number"
-    default 1
-    range 0 30
+    default 4
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 0
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_BTN1_GPIO
     int "Button 1 GPIO number"
-    default 2
-    range 0 30
+    default 5
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 1
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_BTN2_GPIO
     int "Button 2 GPIO number"
-    default 3
-    range 0 30
+    default 6
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 2
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_BTN3_GPIO
     int "Button 3 GPIO number"
-    default 4
-    range 0 30
+    default 7
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 3
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_BTN4_GPIO
     int "Button 4 GPIO number"
-    default 5
-    range 0 30
+    default -1
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 4
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_BTN5_GPIO
     int "Button 5 GPIO number"
-    default 6
-    range 0 30
+    default -1
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 5
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_BTN6_GPIO
     int "Button 6 GPIO number"
-    default 7
-    range 0 30
+    default -1
+    range -1 30
     help
         Pull-up input GPIO that generates game controller button 6
-        when pulled low (pressed).
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
 
 config TC_MODE_GPIO
     int "Impulse/continuous mode GPIO number"
@@ -188,8 +195,9 @@ config TC_MODE_GPIO
         held on and the active axis is proportional to the sliding
         finger distance from the middle of the touch screen.
 
-        Note: the default assignments (GPIO1-GPIO8) may overlap with the
-        board's LCD SPI pins; remap them here to free pins as required.
+        Note: the button GPIOs default to GPIO4-GPIO7 (buttons 0-3),
+        with buttons 4-6 left unassigned (-1), and the mode GPIO to
+        GPIO8; remap them here to free pins as required.
 
 endmenu  # Button inputs
 

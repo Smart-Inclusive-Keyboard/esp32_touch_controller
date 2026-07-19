@@ -294,7 +294,9 @@ static void hw_buttons_init(void)
 {
     uint64_t pin_mask = 0;
     for (int i = 0; i < BTN_GPIO_COUNT; i++) {
-        pin_mask |= 1ULL << s_btn_gpios[i];
+        if (s_btn_gpios[i] >= 0) {
+            pin_mask |= 1ULL << s_btn_gpios[i];
+        }
     }
     pin_mask |= 1ULL << MODE_GPIO;
 
@@ -621,7 +623,7 @@ static void touch_task(void *arg)
         /* -- Sample button GPIOs (buttons 0-6, active low). -- */
         uint16_t btn_mask = 0;
         for (int i = 0; i < BTN_GPIO_COUNT; i++) {
-            if (gpio_get_level(s_btn_gpios[i]) == 0) {
+            if (s_btn_gpios[i] >= 0 && gpio_get_level(s_btn_gpios[i]) == 0) {
                 btn_mask |= (uint16_t)(1u << i);
             }
         }
