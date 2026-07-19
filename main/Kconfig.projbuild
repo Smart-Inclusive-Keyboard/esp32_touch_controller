@@ -189,11 +189,12 @@ config TC_MODE_GPIO
     default 8
     range 0 30
     help
-        Pull-up input GPIO that selects the axis output mode.  When left
-        open (high) the controller runs in impulse mode; when pulled low
-        it switches to continuous mode.  In continuous mode button 9 is
-        held on and the active axis is proportional to the sliding
-        finger distance from the middle of the touch screen.
+        Pull-up input GPIO used as an active-low push button that toggles
+        the axis output mode.  Each press (high->low edge) switches
+        between impulse and continuous mode; the level does not need to be
+        held.  The controller starts in impulse mode.  In continuous mode
+        button 9 is held on and the active axis is proportional to the
+        sliding finger distance from the middle of the touch screen.
 
         Note: the button GPIOs default to GPIO4-GPIO7 (buttons 0-3),
         with buttons 4-6 left unassigned (-1), and the mode GPIO to

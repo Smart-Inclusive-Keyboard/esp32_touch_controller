@@ -45,9 +45,10 @@ Each button GPIO is active low: pulling it to ground reports the
 corresponding game controller button as pressed.  A button set to `-1`
 is skipped and never reports as pressed.
 
-The **mode** GPIO selects the axis output mode: left open (high) the
-controller runs in **impulse** mode; pulled low it switches to
-**continuous** mode.
+The **mode** GPIO is an active-low push button that toggles the axis
+output mode: each press switches between **impulse** and **continuous**
+mode. The button does not need to be held; the controller starts in
+impulse mode.
 
 > Note: the button GPIOs default to GPIO4-GPIO7 (buttons 0-3, with
 > buttons 4-6 unassigned) and the mode GPIO to GPIO8; remap them in
@@ -76,7 +77,7 @@ via `CONFIG_TC_SLIDE_FULL_EVENTS` (default 3).
 
 ### Continuous mode
 
-When the mode GPIO is pulled low, button 9 is held permanently on and
+When continuous mode is selected, button 9 is held permanently on and
 the active axis is set proportional to the sliding finger's distance
 from the middle of the touch screen (fully deflected at the edges,
 centred at the middle). Releasing the finger returns the axis to centre
@@ -86,7 +87,10 @@ and vertical movement, exactly as in impulse mode.
 A long tap toggles the mode as soon as `CONFIG_TC_LONG_TAP_MS` elapses
 while the finger is still held down -- it does not wait for the finger to
 be lifted. Once the toggle has fired, the rest of that touch (including
-the eventual release) is ignored.
+the eventual release) is ignored. A long tap is only recognized when the
+finger stays within `CONFIG_TC_TAP_MAX_MOVE_PX` of the initial touch; if
+the finger slides beyond that distance the touch is treated as a slide
+and holding it still afterwards will not trigger a tap.
 
 ## Mode indicator
 

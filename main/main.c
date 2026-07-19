@@ -607,13 +607,17 @@ static void toggle_mode(void)
  *                      unless a long tap already fired during the hold.
  *
  * Each poll also samples the button GPIOs (buttons 0-6) and the mode
- * GPIO (impulse vs continuous) and forwards any change to the receiver.
+ * GPIO.  A press (high->low edge) on the mode GPIO toggles the output
+ * mode (impulse <-> continuous); any change is forwarded to the receiver.
  *
  * Gesture rules:
- *   displacement < TAP_MAX_MOVE_PX:
+ *   tap (finger never leaves the tap zone, |dx|,|dy| < TAP_MAX_MOVE_PX):
  *       held >= LONG_TAP_MS  -> mode toggle (fires immediately while the
  *                               finger is still down, then the touch is
- *                               consumed and ignored on release)
+ *                               consumed and ignored on release).  Once
+ *                               the finger travels beyond TAP_MAX_MOVE_PX
+ *                               the touch is a slide and can no longer
+ *                               become a tap, even if it later holds still.
  *   |dy| >= SLIDE_MIN_PX (and |dy| > |dx|):
  *       impulse mode:
  *           dy < 0 (up)   -> negative impulse(s)
@@ -629,13 +633,15 @@ static void touch_task(void *arg)
 {
     bool     was_touching = false;
     bool     long_fired   = false;
+    bool     moved        = false;   /* finger left the tap zone (slide) */
     bool     cont_active  = false;   /* continuous slide in progress */
     uint16_t start_x = 0, start_y = 0;
     uint16_t last_x  = 0, last_y  = 0;
     int64_t  start_ms = 0;
 
     uint16_t         prev_buttons = 0;
-    tc_output_mode_t prev_output  = s_output_mode;
+    /* Previous MODE_GPIO level for edge detection (active-low push button). */
+    int prev_mode_level = gpio_get_level(MODE_GPIO);
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
@@ -649,12 +655,14 @@ static void touch_task(void *arg)
         }
         s_gpio_buttons = btn_mask;
 
-        /* -- Sample the mode GPIO (low = continuous, high = impulse). -- */
-        tc_output_mode_t out_mode = (gpio_get_level(MODE_GPIO) == 0)
-                                    ? OUTPUT_CONTINUOUS : OUTPUT_IMPULSE;
-        if (out_mode != prev_output) {
+        /* -- Sample the mode GPIO: each press (high->low edge) toggles
+         *    between impulse and continuous output mode. -- */
+        int mode_level = gpio_get_level(MODE_GPIO);
+        if (mode_level == 0 && prev_mode_level != 0) {
+            tc_output_mode_t out_mode =
+                (s_output_mode == OUTPUT_CONTINUOUS) ? OUTPUT_IMPULSE
+                                                     : OUTPUT_CONTINUOUS;
             s_output_mode = out_mode;
-            prev_output   = out_mode;
             cont_active   = false;
             s_axis_x = 0;
             s_axis_y = 0;
@@ -664,6 +672,7 @@ static void touch_task(void *arg)
                      (out_mode == OUTPUT_CONTINUOUS) ? "CONTINUOUS"
                                                      : "IMPULSE");
         }
+        prev_mode_level = mode_level;
 
         /* -- Forward button changes immediately. -- */
         if (btn_mask != prev_buttons) {
@@ -695,6 +704,7 @@ static void touch_task(void *arg)
             start_ms = esp_timer_get_time() / 1000LL;
             was_touching = true;
             long_fired   = false;
+            moved        = false;
             cont_active  = false;
             ESP_LOGD(TAG, "touch start (%u,%u)", x, y);
 
@@ -708,7 +718,13 @@ static void touch_task(void *arg)
             int dist = adx > ady ? adx : ady;
             int64_t held_ms = (esp_timer_get_time() / 1000LL) - start_ms;
 
-            if (dist < TAP_MAX_MOVE_PX && held_ms >= (int64_t)LONG_TAP_MS) {
+            /* Once the finger travels beyond the tap zone the touch is a
+             * slide; a later stationary hold must not be taken as a tap. */
+            if (dist >= TAP_MAX_MOVE_PX) {
+                moved = true;
+            }
+
+            if (!moved && held_ms >= (int64_t)LONG_TAP_MS) {
                 toggle_mode();
                 ui_refresh_edges();
                 long_fired = true;
