@@ -313,13 +313,22 @@ static void hw_buttons_init(void)
     char btn_list[80];
     int  pos = 0;
     for (int i = 0; i < BTN_GPIO_COUNT; i++) {
-        if (s_btn_gpios[i] >= 0) {
-            pos += snprintf(btn_list + pos, sizeof(btn_list) - pos,
-                            "%s%d", (i == 0) ? "" : ",", s_btn_gpios[i]);
-        } else {
-            pos += snprintf(btn_list + pos, sizeof(btn_list) - pos,
-                            "%soff", (i == 0) ? "" : ",");
+        int remaining = (int)sizeof(btn_list) - pos;
+        if (remaining <= 0) {
+            break;
         }
+        int n;
+        if (s_btn_gpios[i] >= 0) {
+            n = snprintf(btn_list + pos, (size_t)remaining,
+                         "%s%d", (i == 0) ? "" : ",", s_btn_gpios[i]);
+        } else {
+            n = snprintf(btn_list + pos, (size_t)remaining,
+                         "%soff", (i == 0) ? "" : ",");
+        }
+        if (n < 0 || n >= remaining) {
+            break;  /* encoding error or output truncated */
+        }
+        pos += n;
     }
     ESP_LOGI(TAG, "Buttons 0-6 GPIO %s  mode GPIO %d", btn_list, MODE_GPIO);
 }
