@@ -9,7 +9,7 @@
  *   LCD  JD9853  SPI2   SCLK=1 MOSI=2 MISO=3  CS=14 DC=15 RST=22 BL=23
  *                172x320 portrait, column gap=34, colour-inversion on
  *   Touch AXS5106L  I2C0  SDA=18 SCL=19 INT=21 RST=20  addr=0x63
- *   UART  TX=GPIO9  115200 8-N-1  (gamepad HID output)
+ *   UART  TX=GPIO7  115200 8-N-1  (gamepad HID output)
  *
  * Button/mode inputs (configurable, pull-up, active low):
  *   GPIO for buttons 0-6  generate game controller buttons 0-6
