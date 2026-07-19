@@ -22,7 +22,7 @@ Waveshare ESP32-C6-Touch-LCD-1.47 (172x320 portrait IPS):
 |----------|-----|------|
 | LCD (JD9853) | SPI2 | SCLK=1, MOSI=2, MISO=3, CS=14, DC=15, RST=22, BL=23 |
 | Touch (AXS5106L) | I2C0 | SDA=18, SCL=19, INT=21, RST=20 (addr 0x63) |
-| Gamepad output | UART1 | TX=9, 115200 8-N-1, transmit-only |
+| Gamepad output | UART1 | TX=7, 115200 8-N-1, transmit-only |
 
 ## Button and mode inputs
 
@@ -35,11 +35,11 @@ unassigned by default; set a button GPIO to `-1` to leave it unassigned:
 | Button 0 | 4 | Game controller button 0 while pulled low |
 | Button 1 | 5 | Game controller button 1 while pulled low |
 | Button 2 | 6 | Game controller button 2 while pulled low |
-| Button 3 | 7 | Game controller button 3 while pulled low |
+| Button 3 | 8 | Game controller button 3 while pulled low |
 | Button 4 | -1 (unassigned) | Game controller button 4 while pulled low |
 | Button 5 | -1 (unassigned) | Game controller button 5 while pulled low |
 | Button 6 | -1 (unassigned) | Game controller button 6 while pulled low |
-| Mode | 8 | Select axis output mode (see below) |
+| Mode | 9 | Select axis output mode (see below) |
 
 Each button GPIO is active low: pulling it to ground reports the
 corresponding game controller button as pressed.  A button set to `-1`
@@ -50,8 +50,8 @@ output mode: each press switches between **impulse** and **continuous**
 mode. The button does not need to be held; the controller starts in
 impulse mode.
 
-> Note: the button GPIOs default to GPIO4-GPIO7 (buttons 0-3, with
-> buttons 4-6 unassigned) and the mode GPIO to GPIO8; remap them in
+> Note: buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8 (with
+> buttons 4-6 unassigned) and the mode GPIO to GPIO9; remap them in
 > `menuconfig` to free pins as required.
 
 ## Gesture mapping
@@ -110,10 +110,10 @@ one edge of the screen:
 - **HORIZONTAL mode** -- line along the **top** edge.
 
 All on-screen elements (the arrows, the centre divider and the edge
-lines) share a single colour. While sliding, the active mode's edge line
-is highlighted. In impulse mode the elements use
-`CONFIG_TC_COLOR_FOREGROUND`, with the sliding edge highlighted to
-`CONFIG_TC_COLOR_HIGHLIGHT`. In continuous mode they use the direction
+lines) share a single colour and switch together between an idle and an
+active colour. In impulse mode they use `CONFIG_TC_COLOR_IMPULSE_IDLE`
+while idle and switch to `CONFIG_TC_COLOR_IMPULSE_ACTIVE` as soon as a
+sliding gesture is detected. In continuous mode they use the direction
 indicator colour pair: `CONFIG_TC_COLOR_CONTINUOUS_IDLE` (yellow) while
 idling and `CONFIG_TC_COLOR_CONTINUOUS_ACTIVE` (orange) while a sliding
 gesture is detected.
@@ -138,14 +138,14 @@ Tunable options are exposed under **Touch Controller** in `menuconfig`:
 |--------|---------|-------------|
 | `TC_SCREEN_BRIGHTNESS` | 50 | Backlight brightness (percent) |
 | `TC_COLOR_BACKGROUND` | 0x000000 | Background colour (0xRRGGBB) |
-| `TC_COLOR_FOREGROUND` | 0x33ccff | Foreground colour (lines, labels) |
-| `TC_COLOR_HIGHLIGHT` | 0x3366ff | Impulse-mode slide highlight colour |
+| `TC_COLOR_IMPULSE_IDLE` | 0x3333cc | Impulse-mode idle colour (0xRRGGBB) |
+| `TC_COLOR_IMPULSE_ACTIVE` | 0x33ccff | Impulse-mode active colour (0xRRGGBB) |
 | `TC_COLOR_CONTINUOUS_IDLE` | 0xffff00 | Continuous-mode idle indicator (yellow) |
 | `TC_COLOR_CONTINUOUS_ACTIVE` | 0xff8000 | Continuous-mode active indicator (orange) |
-| `TC_UART_TX_GPIO` | 9 | UART TX GPIO number |
+| `TC_UART_TX_GPIO` | 7 | UART TX GPIO number |
 | `TC_UART_BAUD` | 115200 | UART baud rate |
-| `TC_BTN0_GPIO` .. `TC_BTN6_GPIO` | 4, 5, 6, 7, -1, -1, -1 | Button 0-6 input GPIO numbers (-1 = unassigned) |
-| `TC_MODE_GPIO` | 8 | Impulse/continuous mode input GPIO |
+| `TC_BTN0_GPIO` .. `TC_BTN6_GPIO` | 4, 5, 6, 8, -1, -1, -1 | Button 0-6 input GPIO numbers (-1 = unassigned) |
+| `TC_MODE_GPIO` | 9 | Impulse/continuous mode input GPIO |
 | `TC_SLIDE_MIN_PX` | 25 | Minimum travel to classify a slide |
 | `TC_TAP_MAX_MOVE_PX` | 15 | Maximum movement for a long tap |
 | `TC_LONG_TAP_MS` | 500 | Long-tap threshold (mode toggle) |

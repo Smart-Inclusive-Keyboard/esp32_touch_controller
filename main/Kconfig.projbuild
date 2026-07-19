@@ -27,7 +27,7 @@ config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
         LCD SPI (SPI2): SCLK=GPIO1, MOSI=GPIO2, MISO=GPIO3,
                         CS=GPIO14, DC=GPIO15, RST=GPIO22, BL=GPIO23.
         Touch I2C (I2C0): SDA=GPIO18, SCL=GPIO19, INT=GPIO21, RST=GPIO20.
-        UART gamepad TX: GPIO9 (CONFIG_TC_UART_TX_GPIO default).
+        UART gamepad TX: GPIO7 (CONFIG_TC_UART_TX_GPIO default).
 
 endchoice
 
@@ -53,21 +53,22 @@ config TC_COLOR_BACKGROUND
         Screen background colour as a 24-bit 0xRRGGBB value.
         The default is black (0x000000).
 
-config TC_COLOR_FOREGROUND
-    hex "Foreground colour (0xRRGGBB)"
+config TC_COLOR_IMPULSE_IDLE
+    hex "Impulse-mode idle colour (0xRRGGBB)"
     default 0x3333cc
     help
-        Foreground colour used for the navigation guide lines, arrows
-        and button labels, as a 24-bit 0xRRGGBB value.
+        Impulse-mode idle colour used for the navigation guide lines,
+        arrows and button labels while no sliding gesture is in progress,
+        as a 24-bit 0xRRGGBB value.
         The default is #3333cc (blue).
 
-config TC_COLOR_HIGHLIGHT
-    hex "Highlight colour (0xRRGGBB)"
+config TC_COLOR_IMPULSE_ACTIVE
+    hex "Impulse-mode active colour (0xRRGGBB)"
     default 0x33ccff
     help
-        Highlight colour briefly applied to the active edge line while
-        sliding in impulse mode, as a 24-bit 0xRRGGBB value.
-        The default is 0x33ccff (light blue).
+        Impulse-mode active colour applied to all on-screen elements as
+        soon as a sliding gesture is detected, as a 24-bit 0xRRGGBB
+        value.  The default is 0x33ccff (light blue).
 
 config TC_COLOR_CONTINUOUS_IDLE
     hex "Continuous-mode idle colour (0xRRGGBB)"
@@ -95,12 +96,12 @@ menu "UART Gamepad Output"
 
 config TC_UART_TX_GPIO
     int "UART TX GPIO number"
-    default 9
+    default 7
     range 0 30
     help
         GPIO pin driven as the transmit-only UART output that streams
         6-byte HID gamepad reports to the esp32s3_smart_keyboard.
-        GPIO 9 is the default for the Waveshare C6 Touch LCD 1.47.
+        GPIO 7 is the default for the Waveshare C6 Touch LCD 1.47.
         Note: on ESP32-C6, GPIOs 12-17 are used by the embedded
         flash/PSRAM and should not be used for other functions.
         GPIOs 26-27 are reserved for USB D+/D-.
@@ -150,7 +151,7 @@ config TC_BTN2_GPIO
 
 config TC_BTN3_GPIO
     int "Button 3 GPIO number"
-    default 7
+    default 8
     range -1 30
     help
         Pull-up input GPIO that generates game controller button 3
@@ -186,7 +187,7 @@ config TC_BTN6_GPIO
 
 config TC_MODE_GPIO
     int "Impulse/continuous mode GPIO number"
-    default 8
+    default 9
     range 0 30
     help
         Pull-up input GPIO used as an active-low push button that toggles
@@ -196,9 +197,9 @@ config TC_MODE_GPIO
         button 9 is held on and the active axis is proportional to the
         sliding finger distance from the middle of the touch screen.
 
-        Note: the button GPIOs default to GPIO4-GPIO7 (buttons 0-3),
+        Note: buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8,
         with buttons 4-6 left unassigned (-1), and the mode GPIO to
-        GPIO8; remap them here to free pins as required.
+        GPIO9; remap them here to free pins as required.
 
 endmenu  # Button inputs
 

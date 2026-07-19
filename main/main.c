@@ -43,9 +43,10 @@
  * short centre divider line.  The current mode is indicated by a bright
  * edge line: along the right edge in VERTICAL mode and along the top edge
  * in HORIZONTAL mode.  All on-screen elements (arrows, divider and edge
- * lines) share one colour: the plain foreground in impulse mode
- * (CONFIG_TC_COLOR_FOREGROUND, highlighted to CONFIG_TC_COLOR_HIGHLIGHT
- * while sliding) and the continuous-mode indicator colour otherwise
+ * lines) share one colour and switch together between an idle and an
+ * active colour: in impulse mode the idle CONFIG_TC_COLOR_IMPULSE_IDLE
+ * and the active CONFIG_TC_COLOR_IMPULSE_ACTIVE (applied as soon as a
+ * slide is detected), and in continuous mode the indicator colour pair
  * (idle CONFIG_TC_COLOR_CONTINUOUS_IDLE, active
  * CONFIG_TC_COLOR_CONTINUOUS_ACTIVE).  Backlight brightness and the
  * interface colours are configurable (see Kconfig).
@@ -132,8 +133,8 @@ static const char *TAG = "tc";
 
 /* Interface colours (24-bit 0xRRGGBB, from Kconfig). */
 #define COLOR_BG        lv_color_hex(CONFIG_TC_COLOR_BACKGROUND)
-#define COLOR_FG        lv_color_hex(CONFIG_TC_COLOR_FOREGROUND)
-#define COLOR_HL        lv_color_hex(CONFIG_TC_COLOR_HIGHLIGHT)
+#define COLOR_FG        lv_color_hex(CONFIG_TC_COLOR_IMPULSE_IDLE)
+#define COLOR_HL        lv_color_hex(CONFIG_TC_COLOR_IMPULSE_ACTIVE)
 #define COLOR_CONT_IDLE   lv_color_hex(CONFIG_TC_COLOR_CONTINUOUS_IDLE)
 #define COLOR_CONT_ACTIVE lv_color_hex(CONFIG_TC_COLOR_CONTINUOUS_ACTIVE)
 
@@ -481,39 +482,25 @@ static void ui_update_mode(tc_mode_t mode)
     }
 }
 
-/* Base colour of the edge lines when no gesture is active: the plain
- * foreground in impulse mode, the idle indicator colour in continuous
- * mode. */
+/* Base colour of the interface when no gesture is active: the idle
+ * colour for the current output mode (impulse or continuous). */
 static lv_color_t edge_base_color(void)
 {
     return (s_output_mode == OUTPUT_CONTINUOUS) ? COLOR_CONT_IDLE : COLOR_FG;
 }
 
-/* Colour of the active edge line while a slide gesture is in progress:
- * the highlight colour in impulse mode, the active indicator colour in
- * continuous mode. */
+/* Colour of the interface while a slide gesture is in progress: the
+ * active colour for the current output mode (impulse or continuous). */
 static lv_color_t edge_active_color(void)
 {
     return (s_output_mode == OUTPUT_CONTINUOUS) ? COLOR_CONT_ACTIVE : COLOR_HL;
 }
 
-/* Highlight (or un-highlight) an edge line for the current output mode. */
-static void ui_line_highlight(lv_obj_t *line, bool on)
+/* Repaint every on-screen element (edge lines, arrows and the centre
+ * divider) with a single colour so they always change together. */
+static void ui_set_colors(lv_color_t c)
 {
     if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_set_style_line_color(
-            line, on ? edge_active_color() : edge_base_color(), 0);
-        lvgl_port_unlock();
-    }
-}
-
-/* Repaint every on-screen element with the current output mode's base
- * colour so the arrows and the centre divider always match the direction
- * indicator lines. */
-static void ui_refresh_edges(void)
-{
-    if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
-        lv_color_t c = edge_base_color();
         lv_obj_set_style_line_color(s_line_right, c, 0);
         lv_obj_set_style_line_color(s_line_top, c, 0);
         lv_obj_set_style_line_color(s_divider, c, 0);
@@ -521,6 +508,19 @@ static void ui_refresh_edges(void)
         lv_obj_set_style_text_color(s_lbl_dn, c, 0);
         lvgl_port_unlock();
     }
+}
+
+/* Switch all on-screen elements to the active or idle colour at once. */
+static void ui_set_active(bool on)
+{
+    ui_set_colors(on ? edge_active_color() : edge_base_color());
+}
+
+/* Repaint every on-screen element with the current output mode's base
+ * (idle) colour. */
+static void ui_refresh_edges(void)
+{
+    ui_set_colors(edge_base_color());
 }
 
 /* ---------------------------------------------------------------------
@@ -586,9 +586,8 @@ static void send_axis_impulses(int16_t value, int span_px, int full_px)
 /*
  * Emit the axis impulses for a single vertical slide segment that runs
  * from from_y to to_y.  Slides shorter than SLIDE_MIN_PX are ignored.
- * The active mode's edge line is highlighted while the impulses are sent
- * so a slide detected mid-touch gives the same visual feedback as one
- * classified on release.
+ * The interface is switched to the active colour by the caller as soon
+ * as the slide is detected, so no highlighting happens here.
  */
 static void impulse_slide(int from_y, int to_y)
 {
@@ -597,12 +596,9 @@ static void impulse_slide(int from_y, int to_y)
     if (ad < SLIDE_MIN_PX) {
         return;
     }
-    lv_obj_t *edge = (s_mode == MODE_VERTICAL) ? s_line_right : s_line_top;
-    ui_line_highlight(edge, true);
     /* Slide up (to_y < from_y) drives the negative axis, slide down the
      * positive axis, matching the on-screen up/down arrows. */
     send_axis_impulses(d < 0 ? -32767 : 32767, ad, LCD_V_RES);
-    ui_line_highlight(edge, false);
 }
 
 /*
@@ -788,8 +784,6 @@ static void touch_task(void *arg)
                  * active axis.  The mode only selects which axis (Y in
                  * VERTICAL mode, X in HORIZONTAL mode) carries the value,
                  * so both modes react to the same up/down gesture. */
-                lv_obj_t *edge = (s_mode == MODE_VERTICAL)
-                                 ? s_line_right : s_line_top;
                 int adisp     = ady;
                 int pos       = last_y;
                 int span_half = LCD_V_RES / 2;
@@ -805,14 +799,14 @@ static void touch_task(void *arg)
                     }
                     gamepad_flush();
                     if (!cont_active) {
-                        ui_line_highlight(edge, true);
+                        ui_set_active(true);
                         cont_active = true;
                     }
                 } else if (cont_active) {
                     s_axis_x = 0;
                     s_axis_y = 0;
                     gamepad_flush();
-                    ui_line_highlight(edge, false);
+                    ui_set_active(false);
                     cont_active = false;
                 }
 
@@ -826,10 +820,13 @@ static void touch_task(void *arg)
                 if (seg_dir == 0) {
                     /* Establish the initial slide direction, but only for a
                      * predominantly vertical move (horizontal swipes are
-                     * ignored, as on release). */
+                     * ignored, as on release).  Switch the whole interface
+                     * to the active colour as soon as the slide is
+                     * detected, before any impulses are emitted. */
                     if (ady >= SLIDE_MIN_PX && ady >= adx) {
                         seg_dir    = (dy < 0) ? -1 : 1;
                         seg_peak_y = py;
+                        ui_set_active(true);
                     }
                 } else if (seg_dir > 0) {
                     if (py > seg_peak_y) {
@@ -864,9 +861,7 @@ static void touch_task(void *arg)
             if (s_output_mode == OUTPUT_CONTINUOUS) {
                 /* Release the proportional axis; leave button 9 on. */
                 if (cont_active) {
-                    lv_obj_t *edge = (s_mode == MODE_VERTICAL)
-                                     ? s_line_right : s_line_top;
-                    ui_line_highlight(edge, false);
+                    ui_set_active(false);
                     cont_active = false;
                 }
                 s_axis_x = 0;
@@ -886,6 +881,10 @@ static void touch_task(void *arg)
              * horizontal slides leave seg_dir at 0 and are ignored. */
             if (seg_dir != 0) {
                 impulse_slide(seg_start_y, seg_peak_y);
+                /* The interface was switched to the active colour when the
+                 * slide was first detected; restore the idle colour now
+                 * that the gesture has finished. */
+                ui_set_active(false);
             }
         }
     }
