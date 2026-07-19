@@ -66,8 +66,24 @@ config TC_COLOR_HIGHLIGHT
     default 0x3366ff
     help
         Highlight colour briefly applied to the active edge line while
-        sliding and to a button label while it is tapped, as a 24-bit
-        0xRRGGBB value.  The default is 0x3366ff (blue).
+        sliding in impulse mode, as a 24-bit 0xRRGGBB value.
+        The default is 0x3366ff (blue).
+
+config TC_COLOR_CONTINUOUS_IDLE
+    hex "Continuous-mode idle colour (0xRRGGBB)"
+    default 0xffff00
+    help
+        Colour of the direction indicator (active edge line) while in
+        continuous mode and no sliding gesture is in progress, as a
+        24-bit 0xRRGGBB value.  The default is 0xffff00 (yellow).
+
+config TC_COLOR_CONTINUOUS_ACTIVE
+    hex "Continuous-mode active colour (0xRRGGBB)"
+    default 0xff8000
+    help
+        Colour of the direction indicator (active edge line) while a
+        sliding gesture is detected in continuous mode, as a 24-bit
+        0xRRGGBB value.  The default is 0xff8000 (orange).
 
 endmenu  # Display
 
@@ -98,6 +114,84 @@ config TC_UART_BAUD
         (SK_GAMEPAD_UART_BAUD, default 115200).
 
 endmenu  # UART Gamepad Output
+
+# ----------------------------------------------------------------------
+# Button and mode GPIO inputs
+# ----------------------------------------------------------------------
+
+menu "Button inputs"
+
+config TC_BTN0_GPIO
+    int "Button 0 GPIO number"
+    default 1
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 0
+        when pulled low (pressed).
+
+config TC_BTN1_GPIO
+    int "Button 1 GPIO number"
+    default 2
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 1
+        when pulled low (pressed).
+
+config TC_BTN2_GPIO
+    int "Button 2 GPIO number"
+    default 3
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 2
+        when pulled low (pressed).
+
+config TC_BTN3_GPIO
+    int "Button 3 GPIO number"
+    default 4
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 3
+        when pulled low (pressed).
+
+config TC_BTN4_GPIO
+    int "Button 4 GPIO number"
+    default 5
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 4
+        when pulled low (pressed).
+
+config TC_BTN5_GPIO
+    int "Button 5 GPIO number"
+    default 6
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 5
+        when pulled low (pressed).
+
+config TC_BTN6_GPIO
+    int "Button 6 GPIO number"
+    default 7
+    range 0 30
+    help
+        Pull-up input GPIO that generates game controller button 6
+        when pulled low (pressed).
+
+config TC_MODE_GPIO
+    int "Impulse/continuous mode GPIO number"
+    default 8
+    range 0 30
+    help
+        Pull-up input GPIO that selects the axis output mode.  When left
+        open (high) the controller runs in impulse mode; when pulled low
+        it switches to continuous mode.  In continuous mode button 9 is
+        held on and the active axis is proportional to the sliding
+        finger distance from the middle of the touch screen.
+
+        Note: the default assignments (GPIO1-GPIO8) may overlap with the
+        board's LCD SPI pins; remap them here to free pins as required.
+
+endmenu  # Button inputs
 
 # ----------------------------------------------------------------------
 # Gesture detection thresholds
