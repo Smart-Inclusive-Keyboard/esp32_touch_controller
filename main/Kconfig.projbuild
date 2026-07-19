@@ -55,19 +55,19 @@ config TC_COLOR_BACKGROUND
 
 config TC_COLOR_FOREGROUND
     hex "Foreground colour (0xRRGGBB)"
-    default 0x33ccff
+    default 0x3333cc
     help
         Foreground colour used for the navigation guide lines, arrows
         and button labels, as a 24-bit 0xRRGGBB value.
-        The default is 0x33ccff (light blue).
+        The default is #3333cc (blue).
 
 config TC_COLOR_HIGHLIGHT
     hex "Highlight colour (0xRRGGBB)"
-    default 0x3366ff
+    default 0x33ccff
     help
         Highlight colour briefly applied to the active edge line while
         sliding and to a button label while it is tapped, as a 24-bit
-        0xRRGGBB value.  The default is 0x3366ff (blue).
+        0xRRGGBB value. The default is #33ccff (light blue).
 
 endmenu  # Display
 
