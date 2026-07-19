@@ -113,6 +113,9 @@ static const char *TAG = "tc";
 #define COLOR_FG        lv_color_hex(CONFIG_TC_COLOR_FOREGROUND)
 #define COLOR_HL        lv_color_hex(CONFIG_TC_COLOR_HIGHLIGHT)
 
+/* vertical/horizontal indicator line along the edge */
+#define EDGE_INDICATOR_THICKNESS 4
+
 typedef enum {
     MODE_VERTICAL,
     MODE_HORIZONTAL,
@@ -329,7 +332,7 @@ static void ui_create(void)
     static lv_style_t st_edge;
     lv_style_init(&st_edge);
     lv_style_set_line_color(&st_edge, COLOR_FG);
-    lv_style_set_line_width(&st_edge, 4);
+    lv_style_set_line_width(&st_edge, EDGE_INDICATOR_THICKNESS);
     lv_style_set_line_opa(&st_edge, LV_OPA_COVER);
 
     /* -- Up arrow -- top of screen -- */
@@ -365,14 +368,14 @@ static void ui_create(void)
     lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     /* -- Mode indicator: line along the right edge (VERTICAL mode) -- */
-    static lv_point_t right_pts[2] = {{0, 0}, {0, LCD_V_RES - 1}};
+    static lv_point_t right_pts[2] = {{0, 0}, {0, LCD_V_RES - EDGE_INDICATOR_THICKNESS}};
     s_line_right = lv_line_create(scr);
     lv_obj_add_style(s_line_right, &st_edge, 0);
     lv_line_set_points(s_line_right, right_pts, 2);
-    lv_obj_set_pos(s_line_right, LCD_H_RES - 2, 0);
+    lv_obj_set_pos(s_line_right, LCD_H_RES - EDGE_INDICATOR_THICKNESS, 0);
 
     /* -- Mode indicator: line along the top edge (HORIZONTAL mode) -- */
-    static lv_point_t top_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
+    static lv_point_t top_pts[2] = {{0, 0}, {LCD_H_RES - EDGE_INDICATOR_THICKNESS, 0}};
     s_line_top = lv_line_create(scr);
     lv_obj_add_style(s_line_top, &st_edge, 0);
     lv_line_set_points(s_line_top, top_pts, 2);
