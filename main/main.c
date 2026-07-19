@@ -26,24 +26,29 @@
  *
  * In impulse mode a slide spanning the full length of the screen emits
  * several axis impulse events (CONFIG_TC_SLIDE_FULL_EVENTS, default 3);
- * shorter slides emit proportionally fewer events.
+ * shorter slides emit proportionally fewer events.  The slide is tracked
+ * while the finger is held, so its direction can be reversed without
+ * lifting: turning back on the slide emits impulses in the new direction.
  *
- * In continuous mode button 9 is held permanently on and the active axis
- * is set proportional to the sliding finger's distance from the middle
- * of the touch screen; the long tap switches the active axis just as in
- * impulse mode.
+ * The finger always slides vertically (up/down).  In continuous mode
+ * button 9 is held permanently on and the active axis is set proportional
+ * to the sliding finger's distance from the middle of the touch screen;
+ * the long tap switches the active axis just as in impulse mode.  Both
+ * VERTICAL and HORIZONTAL modes react to the same up/down gesture.
  *
  * In VERTICAL mode the axis output is sent on the Y axis; in HORIZONTAL
  * mode it is sent on the X axis.
  *
- * The screen shows a schematic navigation guide.  The current mode is
- * indicated by a bright edge line: along the right edge in VERTICAL
- * mode and along the top edge in HORIZONTAL mode.  In impulse mode the
- * active edge line is highlighted while sliding (CONFIG_TC_COLOR_HIGHLIGHT
- * over CONFIG_TC_COLOR_FOREGROUND).  In continuous mode the direction
- * indicator uses a dedicated colour pair: idle (CONFIG_TC_COLOR_CONTINUOUS_IDLE)
- * and active (CONFIG_TC_COLOR_CONTINUOUS_ACTIVE).  Backlight brightness
- * and the interface colours are configurable (see Kconfig).
+ * The screen shows a schematic navigation guide with two arrows and a
+ * short centre divider line.  The current mode is indicated by a bright
+ * edge line: along the right edge in VERTICAL mode and along the top edge
+ * in HORIZONTAL mode.  All on-screen elements (arrows, divider and edge
+ * lines) share one colour: the plain foreground in impulse mode
+ * (CONFIG_TC_COLOR_FOREGROUND, highlighted to CONFIG_TC_COLOR_HIGHLIGHT
+ * while sliding) and the continuous-mode indicator colour otherwise
+ * (idle CONFIG_TC_COLOR_CONTINUOUS_IDLE, active
+ * CONFIG_TC_COLOR_CONTINUOUS_ACTIVE).  Backlight brightness and the
+ * interface colours are configurable (see Kconfig).
  */
 
 #include <string.h>
@@ -135,6 +140,10 @@ static const char *TAG = "tc";
 /* vertical/horizontal indicator line along the edge */
 #define EDGE_INDICATOR_THICKNESS 4
 
+/* Width of the short centre divider line -- approximately the width of
+ * the up/down arrow glyphs it sits between. */
+#define DIVIDER_WIDTH   24
+
 typedef enum {
     MODE_VERTICAL,
     MODE_HORIZONTAL,
@@ -155,6 +164,9 @@ static esp_lcd_touch_handle_t    s_touch;
 static lv_disp_t                *s_disp;
 static lv_obj_t                 *s_line_right;  /* shown in VERTICAL mode   */
 static lv_obj_t                 *s_line_top;    /* shown in HORIZONTAL mode */
+static lv_obj_t                 *s_lbl_up;      /* up arrow                 */
+static lv_obj_t                 *s_lbl_dn;      /* down arrow               */
+static lv_obj_t                 *s_divider;     /* short centre line        */
 static volatile tc_mode_t        s_mode = MODE_VERTICAL;
 static volatile tc_output_mode_t s_output_mode = OUTPUT_IMPULSE;
 
@@ -381,7 +393,7 @@ static void lvgl_setup(void)
  *  |            ^                |       up-arrow  (slide = negative axis)
  *  |                             |
  *  |                             ||      right edge line = VERTICAL mode
- *  +-----------------------------+  y=160  centre divider
+ *  |            ---              |  y=160  short centre divider
  *  |                             ||
  *  |                             |
  *  |            v                |       down-arrow (slide = positive axis)
@@ -417,24 +429,25 @@ static void ui_create(void)
     lv_style_set_line_opa(&st_edge, LV_OPA_COVER);
 
     /* -- Up arrow -- top of screen -- */
-    lv_obj_t *lbl_up = lv_label_create(scr);
-    lv_label_set_text(lbl_up, LV_SYMBOL_UP);
-    lv_obj_set_style_text_color(lbl_up, COLOR_FG, 0);
-    lv_obj_align(lbl_up, LV_ALIGN_TOP_MID, 0, 10);
+    s_lbl_up = lv_label_create(scr);
+    lv_label_set_text(s_lbl_up, LV_SYMBOL_UP);
+    lv_obj_set_style_text_color(s_lbl_up, COLOR_FG, 0);
+    lv_obj_align(s_lbl_up, LV_ALIGN_TOP_MID, 0, 10);
 
-    /* -- Centre divider line -- */
-    static lv_point_t div_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
-    lv_obj_t *divider = lv_line_create(scr);
-    lv_obj_add_style(divider, &st_line, 0);
-    lv_line_set_points(divider, div_pts, 2);
-    /* Place so the line sits exactly at y=160 (screen centre) */
-    lv_obj_set_pos(divider, 0, LCD_V_RES / 2);
+    /* -- Centre divider line -- a short segment, roughly the width of the
+     * arrow glyphs, centred horizontally at the screen middle. */
+    static lv_point_t div_pts[2] = {{0, 0}, {DIVIDER_WIDTH, 0}};
+    s_divider = lv_line_create(scr);
+    lv_obj_add_style(s_divider, &st_line, 0);
+    lv_line_set_points(s_divider, div_pts, 2);
+    /* Place so the line sits centred at y=160 (screen centre) */
+    lv_obj_set_pos(s_divider, (LCD_H_RES - DIVIDER_WIDTH) / 2, LCD_V_RES / 2);
 
     /* -- Down arrow -- bottom area -- */
-    lv_obj_t *lbl_dn = lv_label_create(scr);
-    lv_label_set_text(lbl_dn, LV_SYMBOL_DOWN);
-    lv_obj_set_style_text_color(lbl_dn, COLOR_FG, 0);
-    lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
+    s_lbl_dn = lv_label_create(scr);
+    lv_label_set_text(s_lbl_dn, LV_SYMBOL_DOWN);
+    lv_obj_set_style_text_color(s_lbl_dn, COLOR_FG, 0);
+    lv_obj_align(s_lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     /* -- Mode indicator: line along the right edge (VERTICAL mode) -- */
     static lv_point_t right_pts[2] = {{0, 0}, {0, LCD_V_RES - EDGE_INDICATOR_THICKNESS}};
@@ -494,12 +507,18 @@ static void ui_line_highlight(lv_obj_t *line, bool on)
     }
 }
 
-/* Repaint both edge lines with the current output mode's base colour. */
+/* Repaint every on-screen element with the current output mode's base
+ * colour so the arrows and the centre divider always match the direction
+ * indicator lines. */
 static void ui_refresh_edges(void)
 {
     if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_set_style_line_color(s_line_right, edge_base_color(), 0);
-        lv_obj_set_style_line_color(s_line_top, edge_base_color(), 0);
+        lv_color_t c = edge_base_color();
+        lv_obj_set_style_line_color(s_line_right, c, 0);
+        lv_obj_set_style_line_color(s_line_top, c, 0);
+        lv_obj_set_style_line_color(s_divider, c, 0);
+        lv_obj_set_style_text_color(s_lbl_up, c, 0);
+        lv_obj_set_style_text_color(s_lbl_dn, c, 0);
         lvgl_port_unlock();
     }
 }
@@ -562,6 +581,28 @@ static void send_axis_impulses(int16_t value, int span_px, int full_px)
             vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
         }
     }
+}
+
+/*
+ * Emit the axis impulses for a single vertical slide segment that runs
+ * from from_y to to_y.  Slides shorter than SLIDE_MIN_PX are ignored.
+ * The active mode's edge line is highlighted while the impulses are sent
+ * so a slide detected mid-touch gives the same visual feedback as one
+ * classified on release.
+ */
+static void impulse_slide(int from_y, int to_y)
+{
+    int d  = to_y - from_y;
+    int ad = d < 0 ? -d : d;
+    if (ad < SLIDE_MIN_PX) {
+        return;
+    }
+    lv_obj_t *edge = (s_mode == MODE_VERTICAL) ? s_line_right : s_line_top;
+    ui_line_highlight(edge, true);
+    /* Slide up (to_y < from_y) drives the negative axis, slide down the
+     * positive axis, matching the on-screen up/down arrows. */
+    send_axis_impulses(d < 0 ? -32767 : 32767, ad, LCD_V_RES);
+    ui_line_highlight(edge, false);
 }
 
 /*
@@ -639,6 +680,15 @@ static void touch_task(void *arg)
     uint16_t last_x  = 0, last_y  = 0;
     int64_t  start_ms = 0;
 
+    /* Impulse-mode slide segmentation: the current monotonic slide runs
+     * from seg_start_y and has reached its furthest point seg_peak_y in
+     * direction seg_dir (0 = none, -1 = up, +1 = down).  When the finger
+     * reverses far enough the completed segment is emitted and a new one
+     * begins, so the slide direction can change without lifting. */
+    int seg_start_y = 0;
+    int seg_peak_y  = 0;
+    int seg_dir     = 0;
+
     uint16_t         prev_buttons = 0;
     /* Previous MODE_GPIO level for edge detection (active-low push button). */
     int prev_mode_level = gpio_get_level(MODE_GPIO);
@@ -706,6 +756,9 @@ static void touch_task(void *arg)
             long_fired   = false;
             moved        = false;
             cont_active  = false;
+            seg_start_y  = (int)y;
+            seg_peak_y   = (int)y;
+            seg_dir      = 0;
             ESP_LOGD(TAG, "touch start (%u,%u)", x, y);
 
         } else if (touched && was_touching && !long_fired) {
@@ -730,14 +783,16 @@ static void touch_task(void *arg)
                 long_fired = true;
 
             } else if (s_output_mode == OUTPUT_CONTINUOUS) {
-                /* Continuous mode: track the finger's distance from the
-                 * middle of the screen on the active axis. */
+                /* Continuous mode: the finger always slides vertically;
+                 * its distance from the middle of the screen drives the
+                 * active axis.  The mode only selects which axis (Y in
+                 * VERTICAL mode, X in HORIZONTAL mode) carries the value,
+                 * so both modes react to the same up/down gesture. */
                 lv_obj_t *edge = (s_mode == MODE_VERTICAL)
                                  ? s_line_right : s_line_top;
-                int adisp     = (s_mode == MODE_VERTICAL) ? ady : adx;
-                int pos       = (s_mode == MODE_VERTICAL) ? last_y : last_x;
-                int span_half = (s_mode == MODE_VERTICAL)
-                                ? LCD_V_RES / 2 : LCD_H_RES / 2;
+                int adisp     = ady;
+                int pos       = last_y;
+                int span_half = LCD_V_RES / 2;
 
                 if (adisp >= SLIDE_MIN_PX) {
                     int16_t val = continuous_axis_value(pos, span_half);
@@ -759,6 +814,41 @@ static void touch_task(void *arg)
                     gamepad_flush();
                     ui_line_highlight(edge, false);
                     cont_active = false;
+                }
+
+            } else if (moved) {
+                /* Impulse mode: emit slides as the finger moves so the
+                 * direction can be reversed without lifting.  The touch is
+                 * split into monotonic vertical segments; a completed
+                 * segment fires its impulses as soon as the finger turns
+                 * back on itself by at least SLIDE_MIN_PX. */
+                int py = (int)last_y;
+                if (seg_dir == 0) {
+                    /* Establish the initial slide direction, but only for a
+                     * predominantly vertical move (horizontal swipes are
+                     * ignored, as on release). */
+                    if (ady >= SLIDE_MIN_PX && ady >= adx) {
+                        seg_dir    = (dy < 0) ? -1 : 1;
+                        seg_peak_y = py;
+                    }
+                } else if (seg_dir > 0) {
+                    if (py > seg_peak_y) {
+                        seg_peak_y = py;
+                    } else if (seg_peak_y - py >= SLIDE_MIN_PX) {
+                        impulse_slide(seg_start_y, seg_peak_y);
+                        seg_start_y = seg_peak_y;
+                        seg_dir     = -1;
+                        seg_peak_y  = py;
+                    }
+                } else { /* seg_dir < 0 */
+                    if (py < seg_peak_y) {
+                        seg_peak_y = py;
+                    } else if (py - seg_peak_y >= SLIDE_MIN_PX) {
+                        impulse_slide(seg_start_y, seg_peak_y);
+                        seg_start_y = seg_peak_y;
+                        seg_dir     = 1;
+                        seg_peak_y  = py;
+                    }
                 }
             }
 
@@ -787,31 +877,16 @@ static void touch_task(void *arg)
 
             int64_t dur_ms = (esp_timer_get_time() / 1000LL) - start_ms;
 
-            int dx   = (int)last_x - (int)start_x;
-            int dy   = (int)last_y - (int)start_y;
-            int adx  = dx < 0 ? -dx : dx;
-            int ady  = dy < 0 ? -dy : dy;
+            ESP_LOGD(TAG, "touch end (%u,%u) dur=%lldms dir=%d",
+                     last_x, last_y, dur_ms, seg_dir);
 
-            ESP_LOGD(TAG, "touch end (%u,%u) dur=%lldms dx=%d dy=%d",
-                     last_x, last_y, dur_ms, dx, dy);
-
-            if (ady >= SLIDE_MIN_PX && ady >= adx) {
-                /* Vertical slide -- reversed navigation direction.
-                 * Number of axis events scales with the slide length.
-                 * Highlight the active mode's edge line meanwhile.   */
-                lv_obj_t *edge = (s_mode == MODE_VERTICAL)
-                                 ? s_line_right : s_line_top;
-                ui_line_highlight(edge, true);
-                if (dy < 0) {
-                    /* Slide up -> negative axis */
-                    send_axis_impulses(-32767, ady, LCD_V_RES);
-                } else {
-                    /* Slide down -> positive axis */
-                    send_axis_impulses(32767, ady, LCD_V_RES);
-                }
-                ui_line_highlight(edge, false);
+            /* Emit the final (still-open) slide segment.  Segments that
+             * ended earlier through a direction reversal were already sent
+             * while the finger was held.  Stationary taps and mostly
+             * horizontal slides leave seg_dir at 0 and are ignored. */
+            if (seg_dir != 0) {
+                impulse_slide(seg_start_y, seg_peak_y);
             }
-            /* Stationary taps and mostly horizontal slides are ignored. */
         }
     }
 }

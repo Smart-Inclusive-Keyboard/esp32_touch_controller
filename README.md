@@ -75,6 +75,10 @@ events; shorter slides produce proportionally fewer events (always at
 least one). The number of events for a full-length slide is configurable
 via `CONFIG_TC_SLIDE_FULL_EVENTS` (default 3).
 
+The slide is tracked while the finger is held, so its direction can be
+reversed without lifting: sliding up and then back down (or vice versa)
+emits impulses in each direction in turn, no release required.
+
 ### Continuous mode
 
 When continuous mode is selected, button 9 is held permanently on and
@@ -83,6 +87,10 @@ from the middle of the touch screen (fully deflected at the edges,
 centred at the middle). Releasing the finger returns the axis to centre
 while button 9 stays on. The long tap still switches between horizontal
 and vertical movement, exactly as in impulse mode.
+
+The finger always slides vertically (up/down); the mode only selects
+which axis carries the value, so both VERTICAL and HORIZONTAL modes
+respond to the same gesture.
 
 A long tap toggles the mode as soon as `CONFIG_TC_LONG_TAP_MS` elapses
 while the finger is still held down -- it does not wait for the finger to
@@ -94,17 +102,21 @@ and holding it still afterwards will not trigger a tap.
 
 ## Mode indicator
 
-The current mode is shown by a bright line along one edge of the screen:
+The screen shows two arrows and a short centre divider line (about the
+width of the arrows). The current mode is shown by a bright line along
+one edge of the screen:
 
 - **VERTICAL mode** -- line along the **right** edge.
 - **HORIZONTAL mode** -- line along the **top** edge.
 
-While sliding, the active mode's edge line is highlighted. In impulse
-mode the highlight uses `CONFIG_TC_COLOR_HIGHLIGHT` over
-`CONFIG_TC_COLOR_FOREGROUND`. In continuous mode the direction indicator
-uses a dedicated colour pair: `CONFIG_TC_COLOR_CONTINUOUS_IDLE` (yellow)
-while idling and `CONFIG_TC_COLOR_CONTINUOUS_ACTIVE` (orange) while a
-sliding gesture is detected.
+All on-screen elements (the arrows, the centre divider and the edge
+lines) share a single colour. While sliding, the active mode's edge line
+is highlighted. In impulse mode the elements use
+`CONFIG_TC_COLOR_FOREGROUND`, with the sliding edge highlighted to
+`CONFIG_TC_COLOR_HIGHLIGHT`. In continuous mode they use the direction
+indicator colour pair: `CONFIG_TC_COLOR_CONTINUOUS_IDLE` (yellow) while
+idling and `CONFIG_TC_COLOR_CONTINUOUS_ACTIVE` (orange) while a sliding
+gesture is detected.
 
 ## UART gamepad report
 
