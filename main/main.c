@@ -47,6 +47,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -308,9 +309,19 @@ static void hw_buttons_init(void)
         .intr_type    = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&cfg));
-    ESP_LOGI(TAG, "Buttons 0-6 GPIO %d,%d,%d,%d,%d,%d,%d  mode GPIO %d",
-             s_btn_gpios[0], s_btn_gpios[1], s_btn_gpios[2], s_btn_gpios[3],
-             s_btn_gpios[4], s_btn_gpios[5], s_btn_gpios[6], MODE_GPIO);
+
+    char btn_list[80];
+    int  pos = 0;
+    for (int i = 0; i < BTN_GPIO_COUNT; i++) {
+        if (s_btn_gpios[i] >= 0) {
+            pos += snprintf(btn_list + pos, sizeof(btn_list) - pos,
+                            "%s%d", (i == 0) ? "" : ",", s_btn_gpios[i]);
+        } else {
+            pos += snprintf(btn_list + pos, sizeof(btn_list) - pos,
+                            "%soff", (i == 0) ? "" : ",");
+        }
+    }
+    ESP_LOGI(TAG, "Buttons 0-6 GPIO %s  mode GPIO %d", btn_list, MODE_GPIO);
 }
 
 /* ---------------------------------------------------------------------
