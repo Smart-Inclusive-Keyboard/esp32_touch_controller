@@ -775,7 +775,6 @@ static void touch_task(void *arg)
             int dy   = (int)last_y - (int)start_y;
             int adx  = dx < 0 ? -dx : dx;
             int ady  = dy < 0 ? -dy : dy;
-            int dist = adx > ady ? adx : ady;
 
             ESP_LOGD(TAG, "touch end (%u,%u) dur=%lldms dx=%d dy=%d",
                      last_x, last_y, dur_ms, dx, dy);
