@@ -86,7 +86,7 @@ config TC_VIBRATION_GPIO
 config TC_VIB_IMPULSE_MS
     int "Impulse report buzz (milliseconds)"
     range 1 500
-    default 15
+    default 90
     help
         Duration of the very short vibration emitted each time an axis
         impulse HID report is issued (impulse mode slide steps).
@@ -94,7 +94,7 @@ config TC_VIB_IMPULSE_MS
 config TC_VIB_VERTICAL_MS
     int "Switch-to-VERTICAL buzz (milliseconds)"
     range 1 2000
-    default 40
+    default 130
     help
         Duration of the short vibration emitted when the operating mode
         switches to VERTICAL.
@@ -102,7 +102,7 @@ config TC_VIB_VERTICAL_MS
 config TC_VIB_HORIZONTAL_MS
     int "Switch-to-HORIZONTAL buzz (milliseconds)"
     range 1 2000
-    default 80
+    default 160
     help
         Duration of the slightly longer vibration emitted when the
         operating mode switches to HORIZONTAL.
@@ -110,7 +110,7 @@ config TC_VIB_HORIZONTAL_MS
 config TC_VIB_LONG_MS
     int "Long buzz (milliseconds)"
     range 1 2000
-    default 150
+    default 200
     help
         Duration of a single long vibration pulse.  One long pulse is
         emitted when switching to impulse output mode; two long pulses
