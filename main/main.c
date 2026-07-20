@@ -18,11 +18,19 @@
  *                172x320 portrait, column gap=34, colour-inversion on
  *   Touch AXS5106L  I2C0  SDA=18 SCL=19 INT=21 RST=20  addr=0x63
  *   UART  TX=GPIO7  115200 8-N-1  (gamepad HID output)
+ *   Vibration motor  GPIO4  (active high, CONFIG_TC_HAS_VIBRATION)
  *
  * Button/mode inputs (configurable, pull-up, active low):
  *   GPIO for buttons 0-15  generate game controller buttons 0-15
  *   Mode GPIO              each press toggles impulse <-> continuous mode
  *                          (touch boards only)
+ *
+ * Optional vibration feedback (CONFIG_TC_HAS_VIBRATION) pulses a motor
+ * GPIO to acknowledge events: a very short buzz on every axis impulse HID
+ * report, a short buzz on switching to VERTICAL and a slightly longer one
+ * on switching to HORIZONTAL, two long buzzes on switching to continuous
+ * mode and one long buzz on switching to impulse mode.  All durations are
+ * configurable (see Kconfig).
  *
  * Gesture -> HID mapping
  *   Slide up        negative axis impulse (impulse mode) or proportional
@@ -65,6 +73,7 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_err.h"
@@ -168,6 +177,24 @@ static const char *TAG = "tc";
 
 #define MODE_GPIO       CONFIG_TC_MODE_GPIO
 #endif /* CONFIG_TC_HAS_TOUCH */
+
+#if CONFIG_TC_HAS_VIBRATION
+/* Vibration motor GPIO (active high) and feedback pulse durations. */
+#define VIB_GPIO          CONFIG_TC_VIBRATION_GPIO
+#define VIB_IMPULSE_MS    CONFIG_TC_VIB_IMPULSE_MS    /* very short */
+#define VIB_VERTICAL_MS   CONFIG_TC_VIB_VERTICAL_MS   /* short      */
+#define VIB_HORIZONTAL_MS CONFIG_TC_VIB_HORIZONTAL_MS /* longer     */
+#define VIB_LONG_MS       CONFIG_TC_VIB_LONG_MS       /* long       */
+#define VIB_GAP_MS        CONFIG_TC_VIB_GAP_MS        /* pulse gap  */
+#else
+/* Fallback durations so the vibration_trigger() no-op call sites compile
+ * unchanged when no vibration motor is present. */
+#define VIB_IMPULSE_MS    0
+#define VIB_VERTICAL_MS   0
+#define VIB_HORIZONTAL_MS 0
+#define VIB_LONG_MS       0
+#define VIB_GAP_MS        0
+#endif /* CONFIG_TC_HAS_VIBRATION */
 
 typedef enum {
     MODE_VERTICAL,
@@ -390,6 +417,84 @@ static void hw_buttons_init(void)
 #endif
 }
 
+/* ---------------------------------------------------------------------
+ * Vibration motor haptic feedback
+ *
+ * A dedicated task drains a queue of vibration patterns so the event
+ * producers (touch task) never block on the motor timing.  Each pattern
+ * pulses the motor GPIO "count" times for "on_ms" milliseconds, with an
+ * idle "gap_ms" between consecutive pulses.
+ * --------------------------------------------------------------------- */
+#if CONFIG_TC_HAS_VIBRATION
+typedef struct {
+    uint16_t on_ms;
+    uint16_t gap_ms;
+    uint8_t  count;
+} vib_pattern_t;
+
+static QueueHandle_t s_vib_queue;
+
+/* Queue a vibration pattern; drops silently if the queue is full or the
+ * subsystem has not been initialised yet. */
+static void vibration_trigger(uint16_t on_ms, uint16_t gap_ms, uint8_t count)
+{
+    if (!s_vib_queue) {
+        return;
+    }
+    vib_pattern_t p = { .on_ms = on_ms, .gap_ms = gap_ms, .count = count };
+    xQueueSend(s_vib_queue, &p, 0);
+}
+
+static void vibration_task(void *arg)
+{
+    (void)arg;
+    vib_pattern_t p;
+    while (1) {
+        if (xQueueReceive(s_vib_queue, &p, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        for (uint8_t i = 0; i < p.count; i++) {
+            gpio_set_level(VIB_GPIO, 1);
+            vTaskDelay(pdMS_TO_TICKS(p.on_ms));
+            gpio_set_level(VIB_GPIO, 0);
+            if (i + 1 < p.count) {
+                vTaskDelay(pdMS_TO_TICKS(p.gap_ms));
+            }
+        }
+    }
+}
+
+/* Configure the vibration motor GPIO as an output (driven low) and start
+ * the vibration task. */
+static void hw_vibration_init(void)
+{
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << VIB_GPIO,
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+    gpio_set_level(VIB_GPIO, 0);
+
+    s_vib_queue = xQueueCreate(8, sizeof(vib_pattern_t));
+    ESP_ERROR_CHECK(s_vib_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    BaseType_t task_ok =
+        xTaskCreate(vibration_task, "vibration", 2048, NULL, 4, NULL);
+    ESP_ERROR_CHECK(task_ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_LOGI(TAG, "Vibration motor GPIO %d", VIB_GPIO);
+}
+#else
+static inline void vibration_trigger(uint16_t on_ms, uint16_t gap_ms,
+                                     uint8_t count)
+{
+    (void)on_ms;
+    (void)gap_ms;
+    (void)count;
+}
+#endif /* CONFIG_TC_HAS_VIBRATION */
+
 #if CONFIG_TC_HAS_DISPLAY
 /* ---------------------------------------------------------------------
  * LVGL setup
@@ -588,6 +693,7 @@ static void gamepad_flush(void)
 /* Send an impulse on the active axis: max value for IMPULSE_MS, then 0. */
 static void send_axis_impulse(int16_t value)
 {
+    vibration_trigger(VIB_IMPULSE_MS, 0, 1);
     if (s_mode == MODE_VERTICAL) {
         s_axis_x = 0;
         s_axis_y = value;
@@ -674,6 +780,11 @@ static void toggle_mode(void)
         (s_mode == MODE_VERTICAL) ? MODE_HORIZONTAL : MODE_VERTICAL;
     s_mode = new_mode;
 
+    /* Short buzz for VERTICAL, slightly longer for HORIZONTAL. */
+    vibration_trigger((new_mode == MODE_VERTICAL) ? VIB_VERTICAL_MS
+                                                  : VIB_HORIZONTAL_MS,
+                      0, 1);
+
     if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
         ui_update_mode(new_mode);
         lvgl_port_unlock();
@@ -759,6 +870,13 @@ static void touch_task(void *arg)
             cont_active   = false;
             s_axis_x = 0;
             s_axis_y = 0;
+            /* Two long buzzes when switching to continuous mode, one long
+             * buzz when switching to impulse mode. */
+            if (out_mode == OUTPUT_CONTINUOUS) {
+                vibration_trigger(VIB_LONG_MS, VIB_GAP_MS, 2);
+            } else {
+                vibration_trigger(VIB_LONG_MS, 0, 1);
+            }
             ui_refresh_edges();
             gamepad_flush();
             ESP_LOGI(TAG, "Output mode: %s",
@@ -986,6 +1104,9 @@ void app_main(void)
     hw_touch_init();
 #endif
     hw_buttons_init();
+#if CONFIG_TC_HAS_VIBRATION
+    hw_vibration_init();
+#endif
 
 #if CONFIG_TC_HAS_DISPLAY
     lvgl_setup();

@@ -39,6 +39,7 @@ config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
                         CS=GPIO14, DC=GPIO15, RST=GPIO22, BL=GPIO23.
         Touch I2C (I2C0): SDA=GPIO18, SCL=GPIO19, INT=GPIO21, RST=GPIO20.
         UART gamepad TX: GPIO7 (CONFIG_TC_UART_TX_GPIO default).
+        Vibration motor: GPIO4 (CONFIG_TC_VIBRATION_GPIO default).
 
 config TC_BOARD_GENERIC_ESP32
     bool "Generic ESP32 (no display, buttons + UART only)"
@@ -54,6 +55,77 @@ config TC_BOARD_GENERIC_ESP32
         to -1 to leave it unassigned.
 
 endchoice
+
+# ----------------------------------------------------------------------
+# Vibration motor
+# ----------------------------------------------------------------------
+
+config TC_HAS_VIBRATION
+    bool "Vibration motor present"
+    default y if TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
+    default n
+    help
+        Enable haptic feedback through a vibration motor.  When set, the
+        firmware pulses a GPIO-driven vibration motor to acknowledge
+        gamepad events: a very short buzz on every axis impulse HID
+        report, and distinct patterns when the operating or output mode
+        changes.  Enabled by default on the Waveshare
+        ESP32-C6-Touch-LCD-1.47 board.
+
+menu "Vibration feedback"
+    depends on TC_HAS_VIBRATION
+
+config TC_VIBRATION_GPIO
+    int "Vibration motor GPIO number"
+    default 4
+    range 0 30
+    help
+        Output GPIO that drives the vibration motor (active high).
+        GPIO 4 is the default for the Waveshare C6 Touch LCD 1.47.
+
+config TC_VIB_IMPULSE_MS
+    int "Impulse report buzz (milliseconds)"
+    range 1 500
+    default 15
+    help
+        Duration of the very short vibration emitted each time an axis
+        impulse HID report is issued (impulse mode slide steps).
+
+config TC_VIB_VERTICAL_MS
+    int "Switch-to-VERTICAL buzz (milliseconds)"
+    range 1 2000
+    default 40
+    help
+        Duration of the short vibration emitted when the operating mode
+        switches to VERTICAL.
+
+config TC_VIB_HORIZONTAL_MS
+    int "Switch-to-HORIZONTAL buzz (milliseconds)"
+    range 1 2000
+    default 80
+    help
+        Duration of the slightly longer vibration emitted when the
+        operating mode switches to HORIZONTAL.
+
+config TC_VIB_LONG_MS
+    int "Long buzz (milliseconds)"
+    range 1 2000
+    default 150
+    help
+        Duration of a single long vibration pulse.  One long pulse is
+        emitted when switching to impulse output mode; two long pulses
+        (separated by TC_VIB_GAP_MS) are emitted when switching to
+        continuous output mode.
+
+config TC_VIB_GAP_MS
+    int "Gap between long buzzes (milliseconds)"
+    range 1 2000
+    default 80
+    help
+        Idle gap between the two long vibration pulses emitted when
+        switching to continuous output mode.
+
+endmenu  # Vibration feedback
 
 # ----------------------------------------------------------------------
 # Display appearance
