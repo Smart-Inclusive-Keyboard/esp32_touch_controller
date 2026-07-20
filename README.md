@@ -24,7 +24,7 @@ in `menuconfig`:
 
 | Board | Display | Touch | Inputs |
 |-------|---------|-------|--------|
-| Waveshare ESP32-C6-Touch-LCD-1.47 | Yes | Yes | Touch gestures, buttons 0-15, mode GPIO |
+| Waveshare ESP32-C6-Touch-LCD-1.47 | Yes | Yes | Touch gestures, buttons 0-15, mode GPIO, vibration motor |
 | Generic ESP32 (no display) | No | No | Buttons 0-15 only |
 
 The **Generic ESP32** board (`CONFIG_TC_BOARD_GENERIC_ESP32`) leaves out
@@ -42,22 +42,19 @@ Waveshare ESP32-C6-Touch-LCD-1.47 (172x320 portrait IPS):
 | LCD (JD9853) | SPI2 | SCLK=1, MOSI=2, MISO=3, CS=14, DC=15, RST=22, BL=23 |
 | Touch (AXS5106L) | I2C0 | SDA=18, SCL=19, INT=21, RST=20 (addr 0x63) |
 | Gamepad output | UART1 | TX=7, 115200 8-N-1, transmit-only |
+| Vibration motor | GPIO | GPIO4, active high (optional, `CONFIG_TC_HAS_VIBRATION`) |
 
 ## Button and mode inputs
 
 Up to sixteen pull-up button inputs (buttons 0-15) plus a mode input (on
 touch boards) are configured (defaults below, all configurable in
-`menuconfig`). Buttons 4-15 are unassigned by default; set a button GPIO
-to `-1` to leave it unassigned:
+`menuconfig`). All buttons are unassigned by default; set a button GPIO
+to a valid pin to enable it, or to `-1` to leave it unassigned:
 
 | Input | Default GPIO | Action |
 |-------|--------------|--------|
-| Button 0 | 4 | Game controller button 0 while pulled low |
-| Button 1 | 5 | Game controller button 1 while pulled low |
-| Button 2 | 6 | Game controller button 2 while pulled low |
-| Button 3 | 8 | Game controller button 3 while pulled low |
-| Button 4..15 | -1 (unassigned) | Game controller button 4..15 while pulled low |
-| Mode | 9 | Select axis output mode (touch boards only) |
+| Button 0..15 | -1 (unassigned) | Game controller button 0..15 while pulled low |
+| Mode | 6 | Select axis output mode (touch boards only) |
 
 Each button GPIO is active low: pulling it to ground reports the
 corresponding game controller button as pressed.  A button set to `-1`
@@ -69,9 +66,9 @@ mode. The button does not need to be held; the controller starts in
 impulse mode. The mode GPIO exists only on boards with touch; the
 generic board has no mode input.
 
-> Note: buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8 (with
-> buttons 4-15 unassigned) and the mode GPIO to GPIO9; remap them in
-> `menuconfig` to free pins as required.
+> Note: all buttons default to unassigned (-1) and the mode GPIO to
+> GPIO6; assign button GPIOs and remap the mode GPIO in `menuconfig` to
+> free pins as required.
 
 ## Gesture mapping
 
@@ -137,6 +134,25 @@ indicator colour pair: `CONFIG_TC_COLOR_CONTINUOUS_IDLE` (yellow) while
 idling and `CONFIG_TC_COLOR_CONTINUOUS_ACTIVE` (orange) while a sliding
 gesture is detected.
 
+## Vibration feedback
+
+Boards with a vibration motor (`CONFIG_TC_HAS_VIBRATION`, enabled by
+default on the Waveshare ESP32-C6-Touch-LCD-1.47 and driven on GPIO4 by
+default) give haptic feedback for the main events:
+
+| Event | Vibration |
+|-------|-----------|
+| Axis impulse HID report issued | Very short buzz (`TC_VIB_IMPULSE_MS`) |
+| Switch to VERTICAL mode | Short buzz (`TC_VIB_VERTICAL_MS`) |
+| Switch to HORIZONTAL mode | Slightly longer buzz (`TC_VIB_HORIZONTAL_MS`) |
+| Switch to continuous mode | Two long buzzes (`TC_VIB_LONG_MS`, gap `TC_VIB_GAP_MS`) |
+| Switch to impulse mode | One long buzz (`TC_VIB_LONG_MS`) |
+
+The motor is driven active high. All pulse durations and the vibration
+motor GPIO are configurable in `menuconfig` under **Touch Controller ->
+Vibration feedback**. Disable `TC_HAS_VIBRATION` to compile the feature
+out entirely.
+
 ## UART gamepad report
 
 Every event sends a 6-byte report, identical to the format used by
@@ -158,6 +174,7 @@ Tunable options are exposed under **Touch Controller** in `menuconfig`:
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `TC_HAS_VIBRATION` | y (Waveshare) | Vibration motor present |
 | `TC_SCREEN_BRIGHTNESS` | 50 | Backlight brightness (percent) |
 | `TC_COLOR_BACKGROUND` | 0x000000 | Background colour (0xRRGGBB) |
 | `TC_COLOR_IMPULSE_IDLE` | 0x3333cc | Impulse-mode idle colour (0xRRGGBB) |
@@ -166,12 +183,18 @@ Tunable options are exposed under **Touch Controller** in `menuconfig`:
 | `TC_COLOR_CONTINUOUS_ACTIVE` | 0xff8000 | Continuous-mode active indicator (orange) |
 | `TC_UART_TX_GPIO` | 7 | UART TX GPIO number |
 | `TC_UART_BAUD` | 115200 | UART baud rate |
-| `TC_BTN0_GPIO` .. `TC_BTN15_GPIO` | 4, 5, 6, 8, then -1 | Button 0-15 input GPIO numbers (-1 = unassigned) |
-| `TC_MODE_GPIO` | 9 | Impulse/continuous mode input GPIO (touch boards) |
+| `TC_BTN0_GPIO` .. `TC_BTN15_GPIO` | -1 (all unassigned) | Button 0-15 input GPIO numbers (-1 = unassigned) |
+| `TC_MODE_GPIO` | 6 | Impulse/continuous mode input GPIO (touch boards) |
 | `TC_SLIDE_MIN_PX` | 25 | Minimum travel to classify a slide |
 | `TC_TAP_MAX_MOVE_PX` | 15 | Maximum movement for a long tap |
 | `TC_LONG_TAP_MS` | 500 | Long-tap threshold (mode toggle) |
 | `TC_SLIDE_FULL_EVENTS` | 3 | Axis events for a full-length slide (impulse mode) |
+| `TC_VIBRATION_GPIO` | 4 | Vibration motor GPIO (active high) |
+| `TC_VIB_IMPULSE_MS` | 15 | Very short buzz on each axis impulse report |
+| `TC_VIB_VERTICAL_MS` | 40 | Short buzz on switching to VERTICAL mode |
+| `TC_VIB_HORIZONTAL_MS` | 80 | Slightly longer buzz on switching to HORIZONTAL mode |
+| `TC_VIB_LONG_MS` | 150 | Long buzz (continuous x2, impulse mode x1) |
+| `TC_VIB_GAP_MS` | 80 | Gap between the two continuous-mode buzzes |
 
 ## Building and flashing
 
@@ -187,13 +210,29 @@ idf.py -p <PORT> flash monitor
 Dependencies (`espressif/esp_lcd_touch`, `espressif/esp_lvgl_port`,
 `lvgl/lvgl`) are resolved automatically by the IDF component manager.
 
+### Build presets
+
+`CMakePresets.json` defines two configure presets that pair a build
+directory with a defaults file:
+
+- `default` -- primary Waveshare ESP32-C6 controller
+  (`sdkconfig.defaults`).
+- `secondary_esp32s3` -- display-less ESP32-S3 button controller
+  (`sdkconfig.defaults.secondary_esp32s3`, generic board with buttons on
+  UART TX GPIO8 and buttons 0-6 on GPIO1-7).
+
+Select a preset with, for example, `idf.py -B build/secondary_esp32s3
+@CMakePresets.json` or your IDE's CMake preset picker.
+
 ## Repository layout
 
 ```
 main/                  application code (main.c, uart_gamepad.*)
 main/Kconfig.projbuild  menuconfig options
 components/             board LCD and touch drivers
-sdkconfig.defaults      default build configuration
+sdkconfig.defaults      default build configuration (primary C6 board)
+sdkconfig.defaults.secondary_esp32s3  defaults for the display-less S3 board
+CMakePresets.json       build presets pairing build dirs with defaults
 ```
 
 ## Contributing
