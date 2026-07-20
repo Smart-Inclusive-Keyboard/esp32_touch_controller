@@ -480,7 +480,9 @@ static void hw_vibration_init(void)
 
     s_vib_queue = xQueueCreate(8, sizeof(vib_pattern_t));
     ESP_ERROR_CHECK(s_vib_queue ? ESP_OK : ESP_ERR_NO_MEM);
-    xTaskCreate(vibration_task, "vibration", 2048, NULL, 4, NULL);
+    BaseType_t task_ok =
+        xTaskCreate(vibration_task, "vibration", 2048, NULL, 4, NULL);
+    ESP_ERROR_CHECK(task_ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_LOGI(TAG, "Vibration motor GPIO %d", VIB_GPIO);
 }
 #else
