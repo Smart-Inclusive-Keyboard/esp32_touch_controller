@@ -9,33 +9,51 @@
  *   LCD  JD9853  SPI2   SCLK=1 MOSI=2 MISO=3  CS=14 DC=15 RST=22 BL=23
  *                172x320 portrait, column gap=34, colour-inversion on
  *   Touch AXS5106L  I2C0  SDA=18 SCL=19 INT=21 RST=20  addr=0x63
- *   UART  TX=GPIO13  115200 8-N-1  (gamepad HID output)
+ *   UART  TX=GPIO7  115200 8-N-1  (gamepad HID output)
+ *
+ * Button/mode inputs (configurable, pull-up, active low):
+ *   GPIO for buttons 0-6  generate game controller buttons 0-6
+ *   Mode GPIO             each press toggles impulse <-> continuous mode
  *
  * Gesture -> HID mapping
- *   Slide up        negative axis impulse (-32767 for 100 ms then 0)
- *   Slide down      positive axis impulse (+32767 for 100 ms then 0)
- *   Short tap upper half  Button 1 press + release
- *   Short tap lower half  Button 0 press + release
+ *   Slide up        negative axis impulse (impulse mode) or proportional
+ *                   axis (continuous mode)
+ *   Slide down      positive axis impulse (impulse mode) or proportional
+ *                   axis (continuous mode)
  *   Long tap (>=TC_LONG_TAP_MS) toggle VERTICAL / HORIZONTAL mode
  *                          (fires as soon as the threshold elapses,
  *                          without waiting for the finger to lift)
  *
- * A slide spanning the full length of the screen emits several axis
- * events (CONFIG_TC_SLIDE_FULL_EVENTS, default 3); shorter slides emit
- * proportionally fewer events.
+ * In impulse mode a slide spanning the full length of the screen emits
+ * several axis impulse events (CONFIG_TC_SLIDE_FULL_EVENTS, default 3);
+ * shorter slides emit proportionally fewer events.  The slide is tracked
+ * while the finger is held, so its direction can be reversed without
+ * lifting: turning back on the slide emits impulses in the new direction.
  *
- * In VERTICAL mode the impulse is sent on the Y axis; in HORIZONTAL
+ * The finger always slides vertically (up/down).  In continuous mode
+ * button 9 is held permanently on and the active axis is set proportional
+ * to the sliding finger's distance from the middle of the touch screen;
+ * the long tap switches the active axis just as in impulse mode.  Both
+ * VERTICAL and HORIZONTAL modes react to the same up/down gesture.
+ *
+ * In VERTICAL mode the axis output is sent on the Y axis; in HORIZONTAL
  * mode it is sent on the X axis.
  *
- * The screen shows a schematic navigation guide.  The current mode is
- * indicated by a bright edge line: along the right edge in VERTICAL
- * mode and along the top edge in HORIZONTAL mode.  While sliding the
- * active edge line is highlighted, and a tapped button label is
- * highlighted, using CONFIG_TC_COLOR_HIGHLIGHT.  Backlight brightness
- * and the interface colours are configurable (see Kconfig).
+ * The screen shows a schematic navigation guide with two arrows and a
+ * short centre divider line.  The current mode is indicated by a bright
+ * edge line: along the right edge in VERTICAL mode and along the top edge
+ * in HORIZONTAL mode.  All on-screen elements (arrows, divider and edge
+ * lines) share one colour and switch together between an idle and an
+ * active colour: in impulse mode the idle CONFIG_TC_COLOR_IMPULSE_IDLE
+ * and the active CONFIG_TC_COLOR_IMPULSE_ACTIVE (applied as soon as a
+ * slide is detected), and in continuous mode the indicator colour pair
+ * (idle CONFIG_TC_COLOR_CONTINUOUS_IDLE, active
+ * CONFIG_TC_COLOR_CONTINUOUS_ACTIVE).  Backlight brightness and the
+ * interface colours are configurable (see Kconfig).
  */
 
 #include <string.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -100,23 +118,43 @@ static const char *TAG = "tc";
 #define DRAW_BUF_LINES  50    /* LVGL DMA draw buffer height in lines */
 #define TOUCH_POLL_MS   20    /* touch polling interval               */
 #define IMPULSE_MS      100   /* axis impulse duration                */
-#define BUTTON_MS       50    /* button press duration                */
-#define HIGHLIGHT_MS    150   /* minimum on-screen highlight duration */
 
 #define SLIDE_MIN_PX    CONFIG_TC_SLIDE_MIN_PX
 #define TAP_MAX_MOVE_PX CONFIG_TC_TAP_MAX_MOVE_PX
 #define LONG_TAP_MS     CONFIG_TC_LONG_TAP_MS
 #define SLIDE_FULL_EVENTS CONFIG_TC_SLIDE_FULL_EVENTS
 
+/* Button and mode input GPIOs (pull-up, active low, from Kconfig). */
+#define BTN_GPIO_COUNT  7
+#define MODE_GPIO       CONFIG_TC_MODE_GPIO
+
+/* Button index that is held on permanently while in continuous mode. */
+#define CONTINUOUS_BTN  9
+
 /* Interface colours (24-bit 0xRRGGBB, from Kconfig). */
 #define COLOR_BG        lv_color_hex(CONFIG_TC_COLOR_BACKGROUND)
-#define COLOR_FG        lv_color_hex(CONFIG_TC_COLOR_FOREGROUND)
-#define COLOR_HL        lv_color_hex(CONFIG_TC_COLOR_HIGHLIGHT)
+#define COLOR_FG        lv_color_hex(CONFIG_TC_COLOR_IMPULSE_IDLE)
+#define COLOR_HL        lv_color_hex(CONFIG_TC_COLOR_IMPULSE_ACTIVE)
+#define COLOR_CONT_IDLE   lv_color_hex(CONFIG_TC_COLOR_CONTINUOUS_IDLE)
+#define COLOR_CONT_ACTIVE lv_color_hex(CONFIG_TC_COLOR_CONTINUOUS_ACTIVE)
+
+/* vertical/horizontal indicator line along the edge */
+#define EDGE_INDICATOR_THICKNESS 4
+
+/* Width of the short centre divider line -- approximately the width of
+ * the up/down arrow glyphs it sits between. */
+#define DIVIDER_WIDTH   24
 
 typedef enum {
     MODE_VERTICAL,
     MODE_HORIZONTAL,
 } tc_mode_t;
+
+/* Axis output mode, selected by the mode GPIO. */
+typedef enum {
+    OUTPUT_IMPULSE,
+    OUTPUT_CONTINUOUS,
+} tc_output_mode_t;
 
 /* ---------------------------------------------------------------------
  * Module-level state
@@ -127,9 +165,25 @@ static esp_lcd_touch_handle_t    s_touch;
 static lv_disp_t                *s_disp;
 static lv_obj_t                 *s_line_right;  /* shown in VERTICAL mode   */
 static lv_obj_t                 *s_line_top;    /* shown in HORIZONTAL mode */
-static lv_obj_t                 *s_lbl_btn1;    /* upper-half button label  */
-static lv_obj_t                 *s_lbl_btn0;    /* lower-half button label  */
+static lv_obj_t                 *s_lbl_up;      /* up arrow                 */
+static lv_obj_t                 *s_lbl_dn;      /* down arrow               */
+static lv_obj_t                 *s_divider;     /* short centre line        */
 static volatile tc_mode_t        s_mode = MODE_VERTICAL;
+static volatile tc_output_mode_t s_output_mode = OUTPUT_IMPULSE;
+
+/* Button GPIOs (buttons 0-6). */
+static const int s_btn_gpios[BTN_GPIO_COUNT] = {
+    CONFIG_TC_BTN0_GPIO, CONFIG_TC_BTN1_GPIO, CONFIG_TC_BTN2_GPIO,
+    CONFIG_TC_BTN3_GPIO, CONFIG_TC_BTN4_GPIO, CONFIG_TC_BTN5_GPIO,
+    CONFIG_TC_BTN6_GPIO,
+};
+
+/* Latest button bitmask read from the button GPIOs (buttons 0-6). */
+static volatile uint16_t s_gpio_buttons;
+
+/* Latest axis values pushed to the gamepad report. */
+static volatile int16_t s_axis_x;
+static volatile int16_t s_axis_y;
 
 /* ---------------------------------------------------------------------
  * Hardware initialisation
@@ -249,6 +303,49 @@ static void hw_touch_init(void)
     ESP_LOGW(TAG, "Touch unavailable -- gesture input disabled");
 }
 
+/* Configure the button and mode GPIOs as pull-up inputs. */
+static void hw_buttons_init(void)
+{
+    uint64_t pin_mask = 0;
+    for (int i = 0; i < BTN_GPIO_COUNT; i++) {
+        if (s_btn_gpios[i] >= 0) {
+            pin_mask |= 1ULL << s_btn_gpios[i];
+        }
+    }
+    pin_mask |= 1ULL << MODE_GPIO;
+
+    const gpio_config_t cfg = {
+        .pin_bit_mask = pin_mask,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+
+    char btn_list[80];
+    int  pos = 0;
+    for (int i = 0; i < BTN_GPIO_COUNT; i++) {
+        int remaining = (int)sizeof(btn_list) - pos;
+        if (remaining <= 0) {
+            break;
+        }
+        int n;
+        if (s_btn_gpios[i] >= 0) {
+            n = snprintf(btn_list + pos, (size_t)remaining,
+                         "%s%d", (i == 0) ? "" : ",", s_btn_gpios[i]);
+        } else {
+            n = snprintf(btn_list + pos, (size_t)remaining,
+                         "%soff", (i == 0) ? "" : ",");
+        }
+        if (n < 0 || n >= remaining) {
+            break;  /* encoding error or output truncated */
+        }
+        pos += n;
+    }
+    ESP_LOGI(TAG, "Buttons 0-6 GPIO %s  mode GPIO %d", btn_list, MODE_GPIO);
+}
+
 /* ---------------------------------------------------------------------
  * LVGL setup
  * --------------------------------------------------------------------- */
@@ -296,19 +393,19 @@ static void lvgl_setup(void)
  *  +-----------------------------+  y=0     top edge line = HORIZONTAL mode
  *  |            ^                |       up-arrow  (slide = negative axis)
  *  |                             |
- *  |         BTN 1               |       upper half -- tap triggers Button 1
  *  |                             ||      right edge line = VERTICAL mode
- *  +-----------------------------+  y=160  centre divider
+ *  |            ---              |  y=160  short centre divider
  *  |                             ||
- *  |         BTN 0               |       lower half -- tap triggers Button 0
  *  |                             |
  *  |            v                |       down-arrow (slide = positive axis)
  *  +-----------------------------+  y=320
  *
  * The current mode is shown by a bright edge line: right edge in
- * VERTICAL mode, top edge in HORIZONTAL mode.
+ * VERTICAL mode, top edge in HORIZONTAL mode.  Game controller buttons
+ * come from dedicated GPIO inputs, not from on-screen taps.
  */
 static void ui_update_mode(tc_mode_t mode);
+static void ui_refresh_edges(void);
 
 static void ui_create(void)
 {
@@ -329,57 +426,48 @@ static void ui_create(void)
     static lv_style_t st_edge;
     lv_style_init(&st_edge);
     lv_style_set_line_color(&st_edge, COLOR_FG);
-    lv_style_set_line_width(&st_edge, 4);
+    lv_style_set_line_width(&st_edge, EDGE_INDICATOR_THICKNESS);
     lv_style_set_line_opa(&st_edge, LV_OPA_COVER);
 
     /* -- Up arrow -- top of screen -- */
-    lv_obj_t *lbl_up = lv_label_create(scr);
-    lv_label_set_text(lbl_up, LV_SYMBOL_UP);
-    lv_obj_set_style_text_color(lbl_up, COLOR_FG, 0);
-    lv_obj_align(lbl_up, LV_ALIGN_TOP_MID, 0, 10);
+    s_lbl_up = lv_label_create(scr);
+    lv_label_set_text(s_lbl_up, LV_SYMBOL_UP);
+    lv_obj_set_style_text_color(s_lbl_up, COLOR_FG, 0);
+    lv_obj_align(s_lbl_up, LV_ALIGN_TOP_MID, 0, 10);
 
-    /* "BTN 1" label in upper half */
-    s_lbl_btn1 = lv_label_create(scr);
-    lv_label_set_text(s_lbl_btn1, "BTN 1");
-    lv_obj_set_style_text_color(s_lbl_btn1, COLOR_FG, 0);
-    lv_obj_align(s_lbl_btn1, LV_ALIGN_TOP_MID, 0, 70);
-
-    /* -- Centre divider line -- */
-    static lv_point_t div_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
-    lv_obj_t *divider = lv_line_create(scr);
-    lv_obj_add_style(divider, &st_line, 0);
-    lv_line_set_points(divider, div_pts, 2);
-    /* Place so the line sits exactly at y=160 (screen centre) */
-    lv_obj_set_pos(divider, 0, LCD_V_RES / 2);
-
-    /* "BTN 0" label in lower half */
-    s_lbl_btn0 = lv_label_create(scr);
-    lv_label_set_text(s_lbl_btn0, "BTN 0");
-    lv_obj_set_style_text_color(s_lbl_btn0, COLOR_FG, 0);
-    lv_obj_align(s_lbl_btn0, LV_ALIGN_CENTER, 0, 60);
+    /* -- Centre divider line -- a short segment, roughly the width of the
+     * arrow glyphs, centred horizontally at the screen middle. */
+    static lv_point_t div_pts[2] = {{0, 0}, {DIVIDER_WIDTH, 0}};
+    s_divider = lv_line_create(scr);
+    lv_obj_add_style(s_divider, &st_line, 0);
+    lv_line_set_points(s_divider, div_pts, 2);
+    /* Place so the line sits centred at y=160 (screen centre) */
+    lv_obj_set_pos(s_divider, (LCD_H_RES - DIVIDER_WIDTH) / 2, LCD_V_RES / 2);
 
     /* -- Down arrow -- bottom area -- */
-    lv_obj_t *lbl_dn = lv_label_create(scr);
-    lv_label_set_text(lbl_dn, LV_SYMBOL_DOWN);
-    lv_obj_set_style_text_color(lbl_dn, COLOR_FG, 0);
-    lv_obj_align(lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
+    s_lbl_dn = lv_label_create(scr);
+    lv_label_set_text(s_lbl_dn, LV_SYMBOL_DOWN);
+    lv_obj_set_style_text_color(s_lbl_dn, COLOR_FG, 0);
+    lv_obj_align(s_lbl_dn, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     /* -- Mode indicator: line along the right edge (VERTICAL mode) -- */
-    static lv_point_t right_pts[2] = {{0, 0}, {0, LCD_V_RES - 1}};
+    static lv_point_t right_pts[2] = {{0, 0}, {0, LCD_V_RES - EDGE_INDICATOR_THICKNESS}};
     s_line_right = lv_line_create(scr);
     lv_obj_add_style(s_line_right, &st_edge, 0);
     lv_line_set_points(s_line_right, right_pts, 2);
-    lv_obj_set_pos(s_line_right, LCD_H_RES - 2, 0);
+    lv_obj_set_pos(s_line_right, LCD_H_RES - EDGE_INDICATOR_THICKNESS, 0);
 
     /* -- Mode indicator: line along the top edge (HORIZONTAL mode) -- */
-    static lv_point_t top_pts[2] = {{0, 0}, {LCD_H_RES - 1, 0}};
+    static lv_point_t top_pts[2] = {{0, 0}, {LCD_H_RES - EDGE_INDICATOR_THICKNESS, 0}};
     s_line_top = lv_line_create(scr);
     lv_obj_add_style(s_line_top, &st_edge, 0);
     lv_line_set_points(s_line_top, top_pts, 2);
     lv_obj_set_pos(s_line_top, 0, 0);
 
-    /* Initial mode is VERTICAL: show right edge, hide top edge. */
+    /* Initial mode is VERTICAL: show right edge, hide top edge, and
+     * paint the edge lines with the current output mode's base colour. */
     ui_update_mode(s_mode);
+    ui_refresh_edges();
 }
 
 static void ui_update_mode(tc_mode_t mode)
@@ -394,40 +482,77 @@ static void ui_update_mode(tc_mode_t mode)
     }
 }
 
-/* Set the colour of an edge line (foreground when not highlighted). */
-static void ui_line_highlight(lv_obj_t *line, bool on)
+/* Base colour of the interface when no gesture is active: the idle
+ * colour for the current output mode (impulse or continuous). */
+static lv_color_t edge_base_color(void)
+{
+    return (s_output_mode == OUTPUT_CONTINUOUS) ? COLOR_CONT_IDLE : COLOR_FG;
+}
+
+/* Colour of the interface while a slide gesture is in progress: the
+ * active colour for the current output mode (impulse or continuous). */
+static lv_color_t edge_active_color(void)
+{
+    return (s_output_mode == OUTPUT_CONTINUOUS) ? COLOR_CONT_ACTIVE : COLOR_HL;
+}
+
+/* Repaint every on-screen element (edge lines, arrows and the centre
+ * divider) with a single colour so they always change together. */
+static void ui_set_colors(lv_color_t c)
 {
     if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_set_style_line_color(line, on ? COLOR_HL : COLOR_FG, 0);
+        lv_obj_set_style_line_color(s_line_right, c, 0);
+        lv_obj_set_style_line_color(s_line_top, c, 0);
+        lv_obj_set_style_line_color(s_divider, c, 0);
+        lv_obj_set_style_text_color(s_lbl_up, c, 0);
+        lv_obj_set_style_text_color(s_lbl_dn, c, 0);
         lvgl_port_unlock();
     }
 }
 
-/* Set the colour of a button label (foreground when not highlighted). */
-static void ui_label_highlight(lv_obj_t *label, bool on)
+/* Switch all on-screen elements to the active or idle colour at once. */
+static void ui_set_active(bool on)
 {
-    if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
-        lv_obj_set_style_text_color(label, on ? COLOR_HL : COLOR_FG, 0);
-        lvgl_port_unlock();
-    }
+    ui_set_colors(on ? edge_active_color() : edge_base_color());
+}
+
+/* Repaint every on-screen element with the current output mode's base
+ * (idle) colour. */
+static void ui_refresh_edges(void)
+{
+    ui_set_colors(edge_base_color());
 }
 
 /* ---------------------------------------------------------------------
  * Gamepad event dispatch helpers
  * --------------------------------------------------------------------- */
 
+/* Send a report with the current axis values, merging the button GPIO
+ * bitmask (buttons 0-6) and, in continuous mode, the always-on button. */
+static void gamepad_flush(void)
+{
+    uint16_t buttons = s_gpio_buttons & 0x7F;
+    if (s_output_mode == OUTPUT_CONTINUOUS) {
+        buttons |= (uint16_t)(1u << CONTINUOUS_BTN);
+    }
+    uart_gamepad_report(s_axis_x, s_axis_y, buttons);
+}
+
 /* Send an impulse on the active axis: max value for IMPULSE_MS, then 0. */
 static void send_axis_impulse(int16_t value)
 {
     if (s_mode == MODE_VERTICAL) {
-        uart_gamepad_report(0, value, 0);
-        vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
-        uart_gamepad_report(0, 0, 0);
+        s_axis_x = 0;
+        s_axis_y = value;
     } else {
-        uart_gamepad_report(value, 0, 0);
-        vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
-        uart_gamepad_report(0, 0, 0);
+        s_axis_x = value;
+        s_axis_y = 0;
     }
+    gamepad_flush();
+    vTaskDelay(pdMS_TO_TICKS(IMPULSE_MS));
+    s_axis_x = 0;
+    s_axis_y = 0;
+    gamepad_flush();
 }
 
 /*
@@ -458,16 +583,44 @@ static void send_axis_impulses(int16_t value, int span_px, int full_px)
     }
 }
 
-/* Press then release a single button (0-indexed). */
-static void send_button(int btn_index)
+/*
+ * Emit the axis impulses for a single vertical slide segment that runs
+ * from from_y to to_y.  Slides shorter than SLIDE_MIN_PX are ignored.
+ * The interface is switched to the active colour by the caller as soon
+ * as the slide is detected, so no highlighting happens here.
+ */
+static void impulse_slide(int from_y, int to_y)
 {
-    const uint16_t mask = (uint16_t)(1u << btn_index);
-    uart_gamepad_report(0, 0, mask);
-    vTaskDelay(pdMS_TO_TICKS(BUTTON_MS));
-    uart_gamepad_report(0, 0, 0);
+    int d  = to_y - from_y;
+    int ad = d < 0 ? -d : d;
+    if (ad < SLIDE_MIN_PX) {
+        return;
+    }
+    /* Slide up (to_y < from_y) drives the negative axis, slide down the
+     * positive axis, matching the on-screen up/down arrows. */
+    send_axis_impulses(d < 0 ? -32767 : 32767, ad, LCD_V_RES);
 }
 
-/* Toggle operating mode and update the UI label. */
+/*
+ * Map a finger position to a signed axis value proportional to its
+ * distance from the middle of the span (half of the screen dimension).
+ * The result is clamped to the valid +-32767 range.
+ */
+static int16_t continuous_axis_value(int pos, int span_half)
+{
+    if (span_half <= 0) {
+        return 0;
+    }
+    int v = ((pos - span_half) * 32767) / span_half;
+    if (v > 32767) {
+        v = 32767;
+    } else if (v < -32767) {
+        v = -32767;
+    }
+    return (int16_t)v;
+}
+
+/* Toggle operating mode and update the UI indicator. */
 static void toggle_mode(void)
 {
     tc_mode_t new_mode =
@@ -490,31 +643,88 @@ static void toggle_mode(void)
  *   TOUCHING -> IDLE   on touch release; gesture is classified then,
  *                      unless a long tap already fired during the hold.
  *
+ * Each poll also samples the button GPIOs (buttons 0-6) and the mode
+ * GPIO.  A press (high->low edge) on the mode GPIO toggles the output
+ * mode (impulse <-> continuous); any change is forwarded to the receiver.
+ *
  * Gesture rules:
- *   displacement < TAP_MAX_MOVE_PX:
+ *   tap (finger never leaves the tap zone, |dx|,|dy| < TAP_MAX_MOVE_PX):
  *       held >= LONG_TAP_MS  -> mode toggle (fires immediately while the
  *                               finger is still down, then the touch is
- *                               consumed and ignored on release)
- *       released < LONG_TAP_MS -> short tap (label highlighted)
- *           start_y < LCD_V_RES/2  -> BTN1
- *           start_y >= LCD_V_RES/2  -> BTN0
+ *                               consumed and ignored on release).  Once
+ *                               the finger travels beyond TAP_MAX_MOVE_PX
+ *                               the touch is a slide and can no longer
+ *                               become a tap, even if it later holds still.
  *   |dy| >= SLIDE_MIN_PX (and |dy| > |dx|):
- *       dy < 0 (up)   -> negative impulse(s)
- *       dy > 0 (down) -> positive impulse(s)
- *       The number of impulses scales with the slide length, up to
- *       SLIDE_FULL_EVENTS for a full-screen slide.  The active edge
- *       line is highlighted for the duration of the slide.
+ *       impulse mode:
+ *           dy < 0 (up)   -> negative impulse(s)
+ *           dy > 0 (down) -> positive impulse(s)
+ *           The number of impulses scales with the slide length, up to
+ *           SLIDE_FULL_EVENTS for a full-screen slide.
+ *       continuous mode:
+ *           the active axis tracks the finger's distance from the middle
+ *           of the screen while the slide lasts; button 9 stays on.
+ *   The active edge line is highlighted for the duration of the slide.
  * --------------------------------------------------------------------- */
 static void touch_task(void *arg)
 {
     bool     was_touching = false;
     bool     long_fired   = false;
+    bool     moved        = false;   /* finger left the tap zone (slide) */
+    bool     cont_active  = false;   /* continuous slide in progress */
     uint16_t start_x = 0, start_y = 0;
     uint16_t last_x  = 0, last_y  = 0;
     int64_t  start_ms = 0;
 
+    /* Impulse-mode slide segmentation: the current monotonic slide runs
+     * from seg_start_y and has reached its furthest point seg_peak_y in
+     * direction seg_dir (0 = none, -1 = up, +1 = down).  When the finger
+     * reverses far enough the completed segment is emitted and a new one
+     * begins, so the slide direction can change without lifting. */
+    int seg_start_y = 0;
+    int seg_peak_y  = 0;
+    int seg_dir     = 0;
+
+    uint16_t         prev_buttons = 0;
+    /* Previous MODE_GPIO level for edge detection (active-low push button). */
+    int prev_mode_level = gpio_get_level(MODE_GPIO);
+
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+
+        /* -- Sample button GPIOs (buttons 0-6, active low). -- */
+        uint16_t btn_mask = 0;
+        for (int i = 0; i < BTN_GPIO_COUNT; i++) {
+            if (s_btn_gpios[i] >= 0 && gpio_get_level(s_btn_gpios[i]) == 0) {
+                btn_mask |= (uint16_t)(1u << i);
+            }
+        }
+        s_gpio_buttons = btn_mask;
+
+        /* -- Sample the mode GPIO: each press (high->low edge) toggles
+         *    between impulse and continuous output mode. -- */
+        int mode_level = gpio_get_level(MODE_GPIO);
+        if (mode_level == 0 && prev_mode_level != 0) {
+            tc_output_mode_t out_mode =
+                (s_output_mode == OUTPUT_CONTINUOUS) ? OUTPUT_IMPULSE
+                                                     : OUTPUT_CONTINUOUS;
+            s_output_mode = out_mode;
+            cont_active   = false;
+            s_axis_x = 0;
+            s_axis_y = 0;
+            ui_refresh_edges();
+            gamepad_flush();
+            ESP_LOGI(TAG, "Output mode: %s",
+                     (out_mode == OUTPUT_CONTINUOUS) ? "CONTINUOUS"
+                                                     : "IMPULSE");
+        }
+        prev_mode_level = mode_level;
+
+        /* -- Forward button changes immediately. -- */
+        if (btn_mask != prev_buttons) {
+            prev_buttons = btn_mask;
+            gamepad_flush();
+        }
 
         if (!s_touch) {
             continue;
@@ -540,6 +750,11 @@ static void touch_task(void *arg)
             start_ms = esp_timer_get_time() / 1000LL;
             was_touching = true;
             long_fired   = false;
+            moved        = false;
+            cont_active  = false;
+            seg_start_y  = (int)y;
+            seg_peak_y   = (int)y;
+            seg_dir      = 0;
             ESP_LOGD(TAG, "touch start (%u,%u)", x, y);
 
         } else if (touched && was_touching && !long_fired) {
@@ -552,9 +767,86 @@ static void touch_task(void *arg)
             int dist = adx > ady ? adx : ady;
             int64_t held_ms = (esp_timer_get_time() / 1000LL) - start_ms;
 
-            if (dist < TAP_MAX_MOVE_PX && held_ms >= (int64_t)LONG_TAP_MS) {
+            /* Once the finger travels beyond the tap zone the touch is a
+             * slide; a later stationary hold must not be taken as a tap. */
+            if (dist >= TAP_MAX_MOVE_PX) {
+                moved = true;
+            }
+
+            if (!moved && held_ms >= (int64_t)LONG_TAP_MS) {
                 toggle_mode();
+                ui_refresh_edges();
                 long_fired = true;
+
+            } else if (s_output_mode == OUTPUT_CONTINUOUS) {
+                /* Continuous mode: the finger always slides vertically;
+                 * its distance from the middle of the screen drives the
+                 * active axis.  The mode only selects which axis (Y in
+                 * VERTICAL mode, X in HORIZONTAL mode) carries the value,
+                 * so both modes react to the same up/down gesture. */
+                int adisp     = ady;
+                int pos       = last_y;
+                int span_half = LCD_V_RES / 2;
+
+                if (adisp >= SLIDE_MIN_PX) {
+                    int16_t val = continuous_axis_value(pos, span_half);
+                    if (s_mode == MODE_VERTICAL) {
+                        s_axis_x = 0;
+                        s_axis_y = val;
+                    } else {
+                        s_axis_x = val;
+                        s_axis_y = 0;
+                    }
+                    gamepad_flush();
+                    if (!cont_active) {
+                        ui_set_active(true);
+                        cont_active = true;
+                    }
+                } else if (cont_active) {
+                    s_axis_x = 0;
+                    s_axis_y = 0;
+                    gamepad_flush();
+                    ui_set_active(false);
+                    cont_active = false;
+                }
+
+            } else if (moved) {
+                /* Impulse mode: emit slides as the finger moves so the
+                 * direction can be reversed without lifting.  The touch is
+                 * split into monotonic vertical segments; a completed
+                 * segment fires its impulses as soon as the finger turns
+                 * back on itself by at least SLIDE_MIN_PX. */
+                int py = (int)last_y;
+                if (seg_dir == 0) {
+                    /* Establish the initial slide direction, but only for a
+                     * predominantly vertical move (horizontal swipes are
+                     * ignored, as on release).  Switch the whole interface
+                     * to the active colour as soon as the slide is
+                     * detected, before any impulses are emitted. */
+                    if (ady >= SLIDE_MIN_PX && ady >= adx) {
+                        seg_dir    = (dy < 0) ? -1 : 1;
+                        seg_peak_y = py;
+                        ui_set_active(true);
+                    }
+                } else if (seg_dir > 0) {
+                    if (py > seg_peak_y) {
+                        seg_peak_y = py;
+                    } else if (seg_peak_y - py >= SLIDE_MIN_PX) {
+                        impulse_slide(seg_start_y, seg_peak_y);
+                        seg_start_y = seg_peak_y;
+                        seg_dir     = -1;
+                        seg_peak_y  = py;
+                    }
+                } else { /* seg_dir < 0 */
+                    if (py < seg_peak_y) {
+                        seg_peak_y = py;
+                    } else if (py - seg_peak_y >= SLIDE_MIN_PX) {
+                        impulse_slide(seg_start_y, seg_peak_y);
+                        seg_start_y = seg_peak_y;
+                        seg_dir     = 1;
+                        seg_peak_y  = py;
+                    }
+                }
             }
 
         } else if (!touched && was_touching) {
@@ -566,43 +858,34 @@ static void touch_task(void *arg)
                 continue;
             }
 
+            if (s_output_mode == OUTPUT_CONTINUOUS) {
+                /* Release the proportional axis; leave button 9 on. */
+                if (cont_active) {
+                    ui_set_active(false);
+                    cont_active = false;
+                }
+                s_axis_x = 0;
+                s_axis_y = 0;
+                gamepad_flush();
+                continue;
+            }
+
             int64_t dur_ms = (esp_timer_get_time() / 1000LL) - start_ms;
 
-            int dx   = (int)last_x - (int)start_x;
-            int dy   = (int)last_y - (int)start_y;
-            int adx  = dx < 0 ? -dx : dx;
-            int ady  = dy < 0 ? -dy : dy;
-            int dist = adx > ady ? adx : ady;
+            ESP_LOGD(TAG, "touch end (%u,%u) dur=%lldms dir=%d",
+                     last_x, last_y, dur_ms, seg_dir);
 
-            ESP_LOGD(TAG, "touch end (%u,%u) dur=%lldms dx=%d dy=%d",
-                     last_x, last_y, dur_ms, dx, dy);
-
-            if (dist < TAP_MAX_MOVE_PX) {
-                /* Short tap: upper half -> BTN1, lower half -> BTN0.
-                 * (Long taps are handled during the hold above.)     */
-                lv_obj_t *lbl = (start_y < LCD_V_RES / 2)
-                                ? s_lbl_btn1 : s_lbl_btn0;
-                ui_label_highlight(lbl, true);
-                send_button((start_y < LCD_V_RES / 2) ? 1 : 0);
-                vTaskDelay(pdMS_TO_TICKS(HIGHLIGHT_MS));
-                ui_label_highlight(lbl, false);
-            } else if (ady >= SLIDE_MIN_PX && ady >= adx) {
-                /* Vertical slide -- reversed navigation direction.
-                 * Number of axis events scales with the slide length.
-                 * Highlight the active mode's edge line meanwhile.   */
-                lv_obj_t *edge = (s_mode == MODE_VERTICAL)
-                                 ? s_line_right : s_line_top;
-                ui_line_highlight(edge, true);
-                if (dy < 0) {
-                    /* Slide up -> negative axis */
-                    send_axis_impulses(-32767, ady, LCD_V_RES);
-                } else {
-                    /* Slide down -> positive axis */
-                    send_axis_impulses(32767, ady, LCD_V_RES);
-                }
-                ui_line_highlight(edge, false);
+            /* Emit the final (still-open) slide segment.  Segments that
+             * ended earlier through a direction reversal were already sent
+             * while the finger was held.  Stationary taps and mostly
+             * horizontal slides leave seg_dir at 0 and are ignored. */
+            if (seg_dir != 0) {
+                impulse_slide(seg_start_y, seg_peak_y);
+                /* The interface was switched to the active colour when the
+                 * slide was first detected; restore the idle colour now
+                 * that the gesture has finished. */
+                ui_set_active(false);
             }
-            /* Mostly horizontal slides are ignored. */
         }
     }
 }
@@ -616,6 +899,7 @@ void app_main(void)
 
     hw_lcd_init();
     hw_touch_init();
+    hw_buttons_init();
     lvgl_setup();
 
     /* Build UI inside the LVGL lock (-1 = wait indefinitely until LVGL task
