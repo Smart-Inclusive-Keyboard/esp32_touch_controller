@@ -147,6 +147,10 @@ endmenu  # UART Gamepad Output
 
 menu "Button inputs"
 
+comment "Buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8;"
+comment "buttons 4-15 default to unassigned (-1).  On touch boards the"
+comment "mode GPIO defaults to GPIO9.  Remap them to free pins as needed."
+
 config TC_BTN0_GPIO
     int "Button 0 GPIO number"
     default 4
@@ -307,10 +311,6 @@ config TC_MODE_GPIO
         held.  The controller starts in impulse mode.  In continuous mode
         button 9 is held on and the active axis is proportional to the
         sliding finger distance from the middle of the touch screen.
-
-        Note: buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8,
-        with buttons 4-15 left unassigned (-1), and the mode GPIO to
-        GPIO9; remap them here to free pins as required.
 
 endmenu  # Button inputs
 

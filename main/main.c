@@ -690,7 +690,7 @@ static void toggle_mode(void)
  *   TOUCHING -> IDLE   on touch release; gesture is classified then,
  *                      unless a long tap already fired during the hold.
  *
- * Each poll also samples the button GPIOs (buttons 0-6) and the mode
+ * Each poll also samples the button GPIOs (buttons 0-15) and the mode
  * GPIO.  A press (high->low edge) on the mode GPIO toggles the output
  * mode (impulse <-> continuous); any change is forwarded to the receiver.
  *
@@ -739,7 +739,7 @@ static void touch_task(void *arg)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(INPUT_POLL_MS));
 
-        /* -- Sample button GPIOs (buttons 0-6, active low). -- */
+        /* -- Sample button GPIOs (buttons 0-15, active low). -- */
         uint16_t btn_mask = 0;
         for (int i = 0; i < BTN_GPIO_COUNT; i++) {
             if (s_btn_gpios[i] >= 0 && gpio_get_level(s_btn_gpios[i]) == 0) {
