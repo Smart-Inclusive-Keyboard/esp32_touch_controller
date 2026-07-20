@@ -6,7 +6,7 @@
  * by esp32s3_dual_foc_gp and consumed by esp32s3_smart_keyboard:
  *
  *   byte 0    : buttons 0-7   (bit n = button n pressed)
- *   byte 1    : buttons 8-9   (bits 0-1) + 6-bit padding (must be 0)
+ *   byte 1    : buttons 8-15  (bit n = button n+8 pressed)
  *   bytes 2-3 : X axis, signed 16-bit little-endian (0 = centre)
  *   bytes 4-5 : Y axis, signed 16-bit little-endian (0 = centre)
  *

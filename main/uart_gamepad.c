@@ -64,7 +64,7 @@ esp_err_t uart_gamepad_report(int16_t axis_x, int16_t axis_y,
 {
     const uint8_t report[6] = {
         (uint8_t)(buttons & 0xFF),          /* buttons 0-7           */
-        (uint8_t)((buttons >> 8) & 0x03),   /* buttons 8-9 + padding */
+        (uint8_t)((buttons >> 8) & 0xFF),   /* buttons 8-15          */
         (uint8_t)(axis_x & 0xFF),           /* X low byte            */
         (uint8_t)((axis_x >> 8) & 0xFF),    /* X high byte           */
         (uint8_t)(axis_y & 0xFF),           /* Y low byte            */

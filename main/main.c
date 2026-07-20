@@ -5,6 +5,14 @@
  * gestures, and sends 6-byte HID gamepad reports over a transmit-only
  * UART to an esp32s3_smart_keyboard receiver.
  *
+ * Two board types are supported, selected in menuconfig:
+ *   - Waveshare ESP32-C6-Touch-LCD-1.47 (display + touch, described
+ *     below).  Selects CONFIG_TC_HAS_DISPLAY and CONFIG_TC_HAS_TOUCH.
+ *   - Generic ESP32 (CONFIG_TC_BOARD_GENERIC_ESP32): no display and no
+ *     touch; only the pull-up button inputs and the UART gamepad output
+ *     are built.  Neither capability flag is set, so all LCD/touch and
+ *     gesture code below is compiled out.
+ *
  * Hardware (Waveshare ESP32-C6-Touch-LCD-1.47, verified):
  *   LCD  JD9853  SPI2   SCLK=1 MOSI=2 MISO=3  CS=14 DC=15 RST=22 BL=23
  *                172x320 portrait, column gap=34, colour-inversion on
@@ -12,8 +20,9 @@
  *   UART  TX=GPIO7  115200 8-N-1  (gamepad HID output)
  *
  * Button/mode inputs (configurable, pull-up, active low):
- *   GPIO for buttons 0-6  generate game controller buttons 0-6
- *   Mode GPIO             each press toggles impulse <-> continuous mode
+ *   GPIO for buttons 0-15  generate game controller buttons 0-15
+ *   Mode GPIO              each press toggles impulse <-> continuous mode
+ *                          (touch boards only)
  *
  * Gesture -> HID mapping
  *   Slide up        negative axis impulse (impulse mode) or proportional
@@ -60,22 +69,30 @@
 #include "esp_timer.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
+
+#include "sdkconfig.h"
+
+#if CONFIG_TC_HAS_DISPLAY
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
-#include "driver/i2c_master.h"
 
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_jd9853.h"
-#include "esp_lcd_touch.h"
-#include "esp_lcd_touch_axs5106.h"
 
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
+#endif /* CONFIG_TC_HAS_DISPLAY */
+
+#if CONFIG_TC_HAS_TOUCH
+#include "driver/i2c_master.h"
+
+#include "esp_lcd_touch.h"
+#include "esp_lcd_touch_axs5106.h"
+#endif /* CONFIG_TC_HAS_TOUCH */
 
 #include "uart_gamepad.h"
-#include "sdkconfig.h"
 
 static const char *TAG = "tc";
 
@@ -115,21 +132,16 @@ static const char *TAG = "tc";
 /* ---------------------------------------------------------------------
  * Application constants
  * --------------------------------------------------------------------- */
-#define DRAW_BUF_LINES  50    /* LVGL DMA draw buffer height in lines */
-#define TOUCH_POLL_MS   20    /* touch polling interval               */
-#define IMPULSE_MS      100   /* axis impulse duration                */
+#define INPUT_POLL_MS   20    /* button / touch polling interval      */
 
-#define SLIDE_MIN_PX    CONFIG_TC_SLIDE_MIN_PX
-#define TAP_MAX_MOVE_PX CONFIG_TC_TAP_MAX_MOVE_PX
-#define LONG_TAP_MS     CONFIG_TC_LONG_TAP_MS
-#define SLIDE_FULL_EVENTS CONFIG_TC_SLIDE_FULL_EVENTS
-
-/* Button and mode input GPIOs (pull-up, active low, from Kconfig). */
-#define BTN_GPIO_COUNT  7
-#define MODE_GPIO       CONFIG_TC_MODE_GPIO
+/* Button input GPIOs (pull-up, active low, from Kconfig). */
+#define BTN_GPIO_COUNT  16
 
 /* Button index that is held on permanently while in continuous mode. */
 #define CONTINUOUS_BTN  9
+
+#if CONFIG_TC_HAS_DISPLAY
+#define DRAW_BUF_LINES  50    /* LVGL DMA draw buffer height in lines */
 
 /* Interface colours (24-bit 0xRRGGBB, from Kconfig). */
 #define COLOR_BG        lv_color_hex(CONFIG_TC_COLOR_BACKGROUND)
@@ -144,6 +156,18 @@ static const char *TAG = "tc";
 /* Width of the short centre divider line -- approximately the width of
  * the up/down arrow glyphs it sits between. */
 #define DIVIDER_WIDTH   24
+#endif /* CONFIG_TC_HAS_DISPLAY */
+
+#if CONFIG_TC_HAS_TOUCH
+#define IMPULSE_MS      100   /* axis impulse duration                */
+
+#define SLIDE_MIN_PX    CONFIG_TC_SLIDE_MIN_PX
+#define TAP_MAX_MOVE_PX CONFIG_TC_TAP_MAX_MOVE_PX
+#define LONG_TAP_MS     CONFIG_TC_LONG_TAP_MS
+#define SLIDE_FULL_EVENTS CONFIG_TC_SLIDE_FULL_EVENTS
+
+#define MODE_GPIO       CONFIG_TC_MODE_GPIO
+#endif /* CONFIG_TC_HAS_TOUCH */
 
 typedef enum {
     MODE_VERTICAL,
@@ -159,26 +183,35 @@ typedef enum {
 /* ---------------------------------------------------------------------
  * Module-level state
  * --------------------------------------------------------------------- */
+#if CONFIG_TC_HAS_DISPLAY
 static esp_lcd_panel_io_handle_t s_io_handle;
 static esp_lcd_panel_handle_t    s_panel;
-static esp_lcd_touch_handle_t    s_touch;
 static lv_disp_t                *s_disp;
 static lv_obj_t                 *s_line_right;  /* shown in VERTICAL mode   */
 static lv_obj_t                 *s_line_top;    /* shown in HORIZONTAL mode */
 static lv_obj_t                 *s_lbl_up;      /* up arrow                 */
 static lv_obj_t                 *s_lbl_dn;      /* down arrow               */
 static lv_obj_t                 *s_divider;     /* short centre line        */
+#endif /* CONFIG_TC_HAS_DISPLAY */
+#if CONFIG_TC_HAS_TOUCH
+static esp_lcd_touch_handle_t    s_touch;
+#endif /* CONFIG_TC_HAS_TOUCH */
+#if CONFIG_TC_HAS_DISPLAY || CONFIG_TC_HAS_TOUCH
 static volatile tc_mode_t        s_mode = MODE_VERTICAL;
+#endif
 static volatile tc_output_mode_t s_output_mode = OUTPUT_IMPULSE;
 
-/* Button GPIOs (buttons 0-6). */
+/* Button GPIOs (buttons 0-15; -1 = unassigned). */
 static const int s_btn_gpios[BTN_GPIO_COUNT] = {
-    CONFIG_TC_BTN0_GPIO, CONFIG_TC_BTN1_GPIO, CONFIG_TC_BTN2_GPIO,
-    CONFIG_TC_BTN3_GPIO, CONFIG_TC_BTN4_GPIO, CONFIG_TC_BTN5_GPIO,
-    CONFIG_TC_BTN6_GPIO,
+    CONFIG_TC_BTN0_GPIO,  CONFIG_TC_BTN1_GPIO,  CONFIG_TC_BTN2_GPIO,
+    CONFIG_TC_BTN3_GPIO,  CONFIG_TC_BTN4_GPIO,  CONFIG_TC_BTN5_GPIO,
+    CONFIG_TC_BTN6_GPIO,  CONFIG_TC_BTN7_GPIO,  CONFIG_TC_BTN8_GPIO,
+    CONFIG_TC_BTN9_GPIO,  CONFIG_TC_BTN10_GPIO, CONFIG_TC_BTN11_GPIO,
+    CONFIG_TC_BTN12_GPIO, CONFIG_TC_BTN13_GPIO, CONFIG_TC_BTN14_GPIO,
+    CONFIG_TC_BTN15_GPIO,
 };
 
-/* Latest button bitmask read from the button GPIOs (buttons 0-6). */
+/* Latest button bitmask read from the button GPIOs (buttons 0-15). */
 static volatile uint16_t s_gpio_buttons;
 
 /* Latest axis values pushed to the gamepad report. */
@@ -188,6 +221,7 @@ static volatile int16_t s_axis_y;
 /* ---------------------------------------------------------------------
  * Hardware initialisation
  * --------------------------------------------------------------------- */
+#if CONFIG_TC_HAS_DISPLAY
 static void hw_lcd_init(void)
 {
     /* SPI bus */
@@ -247,7 +281,9 @@ static void hw_lcd_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_ch));
 }
+#endif /* CONFIG_TC_HAS_DISPLAY */
 
+#if CONFIG_TC_HAS_TOUCH
 static void hw_touch_init(void)
 {
     /* I2C master bus */
@@ -302,8 +338,10 @@ static void hw_touch_init(void)
     s_touch = NULL;
     ESP_LOGW(TAG, "Touch unavailable -- gesture input disabled");
 }
+#endif /* CONFIG_TC_HAS_TOUCH */
 
-/* Configure the button and mode GPIOs as pull-up inputs. */
+/* Configure the button (and, on touch boards, mode) GPIOs as pull-up
+ * inputs. */
 static void hw_buttons_init(void)
 {
     uint64_t pin_mask = 0;
@@ -312,7 +350,9 @@ static void hw_buttons_init(void)
             pin_mask |= 1ULL << s_btn_gpios[i];
         }
     }
+#if CONFIG_TC_HAS_TOUCH
     pin_mask |= 1ULL << MODE_GPIO;
+#endif
 
     const gpio_config_t cfg = {
         .pin_bit_mask = pin_mask,
@@ -323,7 +363,7 @@ static void hw_buttons_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&cfg));
 
-    char btn_list[80];
+    char btn_list[160];
     int  pos = 0;
     for (int i = 0; i < BTN_GPIO_COUNT; i++) {
         int remaining = (int)sizeof(btn_list) - pos;
@@ -343,9 +383,14 @@ static void hw_buttons_init(void)
         }
         pos += n;
     }
-    ESP_LOGI(TAG, "Buttons 0-6 GPIO %s  mode GPIO %d", btn_list, MODE_GPIO);
+#if CONFIG_TC_HAS_TOUCH
+    ESP_LOGI(TAG, "Buttons 0-15 GPIO %s  mode GPIO %d", btn_list, MODE_GPIO);
+#else
+    ESP_LOGI(TAG, "Buttons 0-15 GPIO %s", btn_list);
+#endif
 }
 
+#if CONFIG_TC_HAS_DISPLAY
 /* ---------------------------------------------------------------------
  * LVGL setup
  * --------------------------------------------------------------------- */
@@ -522,22 +567,24 @@ static void ui_refresh_edges(void)
 {
     ui_set_colors(edge_base_color());
 }
+#endif /* CONFIG_TC_HAS_DISPLAY */
 
 /* ---------------------------------------------------------------------
  * Gamepad event dispatch helpers
  * --------------------------------------------------------------------- */
 
 /* Send a report with the current axis values, merging the button GPIO
- * bitmask (buttons 0-6) and, in continuous mode, the always-on button. */
+ * bitmask (buttons 0-15) and, in continuous mode, the always-on button. */
 static void gamepad_flush(void)
 {
-    uint16_t buttons = s_gpio_buttons & 0x7F;
+    uint16_t buttons = s_gpio_buttons;
     if (s_output_mode == OUTPUT_CONTINUOUS) {
         buttons |= (uint16_t)(1u << CONTINUOUS_BTN);
     }
     uart_gamepad_report(s_axis_x, s_axis_y, buttons);
 }
 
+#if CONFIG_TC_HAS_TOUCH
 /* Send an impulse on the active axis: max value for IMPULSE_MS, then 0. */
 static void send_axis_impulse(int16_t value)
 {
@@ -643,7 +690,7 @@ static void toggle_mode(void)
  *   TOUCHING -> IDLE   on touch release; gesture is classified then,
  *                      unless a long tap already fired during the hold.
  *
- * Each poll also samples the button GPIOs (buttons 0-6) and the mode
+ * Each poll also samples the button GPIOs (buttons 0-15) and the mode
  * GPIO.  A press (high->low edge) on the mode GPIO toggles the output
  * mode (impulse <-> continuous); any change is forwarded to the receiver.
  *
@@ -690,9 +737,9 @@ static void touch_task(void *arg)
     int prev_mode_level = gpio_get_level(MODE_GPIO);
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+        vTaskDelay(pdMS_TO_TICKS(INPUT_POLL_MS));
 
-        /* -- Sample button GPIOs (buttons 0-6, active low). -- */
+        /* -- Sample button GPIOs (buttons 0-15, active low). -- */
         uint16_t btn_mask = 0;
         for (int i = 0; i < BTN_GPIO_COUNT; i++) {
             if (s_btn_gpios[i] >= 0 && gpio_get_level(s_btn_gpios[i]) == 0) {
@@ -889,6 +936,41 @@ static void touch_task(void *arg)
         }
     }
 }
+#endif /* CONFIG_TC_HAS_TOUCH */
+
+#if !CONFIG_TC_HAS_TOUCH
+/* ---------------------------------------------------------------------
+ * Button-only input task (boards without touch)
+ *
+ * Samples the pull-up button GPIOs (buttons 0-15, active low) and streams
+ * a gamepad report whenever the button state changes.  The axes stay
+ * centred; there is no display, touch or mode GPIO on these boards.
+ * --------------------------------------------------------------------- */
+static void button_task(void *arg)
+{
+    uint16_t prev_buttons = 0;
+
+    /* Emit an initial report so the receiver knows the starting state. */
+    gamepad_flush();
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(INPUT_POLL_MS));
+
+        uint16_t btn_mask = 0;
+        for (int i = 0; i < BTN_GPIO_COUNT; i++) {
+            if (s_btn_gpios[i] >= 0 && gpio_get_level(s_btn_gpios[i]) == 0) {
+                btn_mask |= (uint16_t)(1u << i);
+            }
+        }
+        s_gpio_buttons = btn_mask;
+
+        if (btn_mask != prev_buttons) {
+            prev_buttons = btn_mask;
+            gamepad_flush();
+        }
+    }
+}
+#endif /* !CONFIG_TC_HAS_TOUCH */
 
 /* ---------------------------------------------------------------------
  * app_main
@@ -897,9 +979,15 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "ESP32 Touch Controller starting");
 
+#if CONFIG_TC_HAS_DISPLAY
     hw_lcd_init();
+#endif
+#if CONFIG_TC_HAS_TOUCH
     hw_touch_init();
+#endif
     hw_buttons_init();
+
+#if CONFIG_TC_HAS_DISPLAY
     lvgl_setup();
 
     /* Build UI inside the LVGL lock (-1 = wait indefinitely until LVGL task
@@ -908,10 +996,15 @@ void app_main(void)
         ui_create();
         lvgl_port_unlock();
     }
+#endif
 
     ESP_ERROR_CHECK(uart_gamepad_init());
 
+#if CONFIG_TC_HAS_TOUCH
     xTaskCreate(touch_task, "touch", 4096, NULL, 5, NULL);
-
     ESP_LOGI(TAG, "Running -- initial mode: VERTICAL");
+#else
+    xTaskCreate(button_task, "button", 4096, NULL, 5, NULL);
+    ESP_LOGI(TAG, "Running -- buttons only (no display/touch)");
+#endif
 }

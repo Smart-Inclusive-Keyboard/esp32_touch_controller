@@ -3,10 +3,19 @@ menu "Touch Controller"
 # ----------------------------------------------------------------------
 # Hardware board selection.
 # Each entry "select"s the internal capability flags used by main.c.
-# To add a new board: add a config entry here, add a matching
-# #ifdef CONFIG_TC_BOARD_<NAME> block in main/main.c with the correct
-# pin definitions.
+# To add a new board: add a config entry here that selects the
+# capabilities it provides (TC_HAS_DISPLAY, TC_HAS_TOUCH), and add a
+# matching #ifdef CONFIG_TC_BOARD_<NAME> block in main/main.c with the
+# correct pin definitions.
 # ----------------------------------------------------------------------
+
+# Internal capability flags selected by the board choice below.  main.c
+# compiles the display and touch subsystems only when these are set.
+config TC_HAS_DISPLAY
+    bool
+
+config TC_HAS_TOUCH
+    bool
 
 choice TC_BOARD
     prompt "Hardware board"
@@ -19,6 +28,8 @@ choice TC_BOARD
 config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
     bool "Waveshare ESP32-C6-Touch-LCD-1.47"
     depends on IDF_TARGET_ESP32C6
+    select TC_HAS_DISPLAY
+    select TC_HAS_TOUCH
     help
         Waveshare ESP32-C6-Touch-LCD-1.47 development board.
         1.47 inch 172x320 portrait IPS LCD with JD9853 SPI
@@ -29,6 +40,19 @@ config TC_BOARD_WAVESHARE_C6_TOUCH_LCD_147
         Touch I2C (I2C0): SDA=GPIO18, SCL=GPIO19, INT=GPIO21, RST=GPIO20.
         UART gamepad TX: GPIO7 (CONFIG_TC_UART_TX_GPIO default).
 
+config TC_BOARD_GENERIC_ESP32
+    bool "Generic ESP32 (no display, buttons + UART only)"
+    help
+        Generic ESP32 board without a display or touch panel.  Only the
+        UART gamepad output and the pull-up button inputs are used; the
+        LCD, capacitive touch, gesture detection and mode GPIO are all
+        left out of the build.
+
+        Buttons 0-15 (CONFIG_TC_BTN0_GPIO .. CONFIG_TC_BTN15_GPIO) are
+        sampled and streamed as game controller buttons over the
+        transmit-only UART (CONFIG_TC_UART_TX_GPIO).  Set a button GPIO
+        to -1 to leave it unassigned.
+
 endchoice
 
 # ----------------------------------------------------------------------
@@ -36,6 +60,7 @@ endchoice
 # ----------------------------------------------------------------------
 
 menu "Display"
+    depends on TC_HAS_DISPLAY
 
 config TC_SCREEN_BRIGHTNESS
     int "Screen brightness (percent)"
@@ -122,6 +147,10 @@ endmenu  # UART Gamepad Output
 
 menu "Button inputs"
 
+comment "Buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8;"
+comment "buttons 4-15 default to unassigned (-1).  On touch boards the"
+comment "mode GPIO defaults to GPIO9.  Remap them to free pins as needed."
+
 config TC_BTN0_GPIO
     int "Button 0 GPIO number"
     default 4
@@ -185,8 +214,94 @@ config TC_BTN6_GPIO
         when pulled low (pressed).  Set to -1 to leave the button
         unassigned (no GPIO is configured for it).
 
+config TC_BTN7_GPIO
+    int "Button 7 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 7
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN8_GPIO
+    int "Button 8 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 8
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN9_GPIO
+    int "Button 9 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 9
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+        Note: on boards with touch, button 9 is also driven on
+        permanently while in continuous mode; avoid assigning a GPIO
+        to it there unless a shared meaning is intended.
+
+config TC_BTN10_GPIO
+    int "Button 10 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 10
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN11_GPIO
+    int "Button 11 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 11
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN12_GPIO
+    int "Button 12 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 12
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN13_GPIO
+    int "Button 13 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 13
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN14_GPIO
+    int "Button 14 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 14
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
+config TC_BTN15_GPIO
+    int "Button 15 GPIO number"
+    default -1
+    range -1 30
+    help
+        Pull-up input GPIO that generates game controller button 15
+        when pulled low (pressed).  Set to -1 to leave the button
+        unassigned (no GPIO is configured for it).
+
 config TC_MODE_GPIO
     int "Impulse/continuous mode GPIO number"
+    depends on TC_HAS_TOUCH
     default 9
     range 0 30
     help
@@ -197,10 +312,6 @@ config TC_MODE_GPIO
         button 9 is held on and the active axis is proportional to the
         sliding finger distance from the middle of the touch screen.
 
-        Note: buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8,
-        with buttons 4-6 left unassigned (-1), and the mode GPIO to
-        GPIO9; remap them here to free pins as required.
-
 endmenu  # Button inputs
 
 # ----------------------------------------------------------------------
@@ -208,6 +319,7 @@ endmenu  # Button inputs
 # ----------------------------------------------------------------------
 
 menu "Gesture thresholds"
+    depends on TC_HAS_TOUCH
 
 config TC_SLIDE_MIN_PX
     int "Minimum slide distance (pixels)"

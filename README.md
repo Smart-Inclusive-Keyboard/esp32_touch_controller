@@ -6,6 +6,9 @@ navigation controller. Touch gestures and dedicated GPIO buttons are
 interpreted on-device and streamed as 6-byte HID gamepad reports over a
 transmit-only UART to an `esp32s3_smart_keyboard` receiver.
 
+A second, display-less board type is also supported for setups that only
+need physical buttons (see [Board types](#board-types)).
+
 ## Overview
 
 The board polls its AXS5106L capacitive touch controller, classifies the
@@ -13,6 +16,22 @@ touch as a long tap or a slide, samples a set of pull-up button GPIOs,
 and emits the corresponding gamepad event on UART1. The 1.47" JD9853 LCD
 displays a schematic navigation guide and a bright edge line that
 indicates the current axis mode.
+
+## Board types
+
+The target board is selected under **Touch Controller -> Hardware board**
+in `menuconfig`:
+
+| Board | Display | Touch | Inputs |
+|-------|---------|-------|--------|
+| Waveshare ESP32-C6-Touch-LCD-1.47 | Yes | Yes | Touch gestures, buttons 0-15, mode GPIO |
+| Generic ESP32 (no display) | No | No | Buttons 0-15 only |
+
+The **Generic ESP32** board (`CONFIG_TC_BOARD_GENERIC_ESP32`) leaves out
+the LCD, capacitive touch, gesture detection and mode GPIO entirely. It
+only samples the pull-up button inputs and streams them as game
+controller buttons over the transmit-only UART, so it runs on any plain
+ESP32-family chip without a display.
 
 ## Hardware
 
@@ -26,9 +45,10 @@ Waveshare ESP32-C6-Touch-LCD-1.47 (172x320 portrait IPS):
 
 ## Button and mode inputs
 
-Up to seven pull-up button inputs plus a mode input are configured
-(defaults below, all configurable in `menuconfig`).  Buttons 4-6 are
-unassigned by default; set a button GPIO to `-1` to leave it unassigned:
+Up to sixteen pull-up button inputs (buttons 0-15) plus a mode input (on
+touch boards) are configured (defaults below, all configurable in
+`menuconfig`). Buttons 4-15 are unassigned by default; set a button GPIO
+to `-1` to leave it unassigned:
 
 | Input | Default GPIO | Action |
 |-------|--------------|--------|
@@ -36,10 +56,8 @@ unassigned by default; set a button GPIO to `-1` to leave it unassigned:
 | Button 1 | 5 | Game controller button 1 while pulled low |
 | Button 2 | 6 | Game controller button 2 while pulled low |
 | Button 3 | 8 | Game controller button 3 while pulled low |
-| Button 4 | -1 (unassigned) | Game controller button 4 while pulled low |
-| Button 5 | -1 (unassigned) | Game controller button 5 while pulled low |
-| Button 6 | -1 (unassigned) | Game controller button 6 while pulled low |
-| Mode | 9 | Select axis output mode (see below) |
+| Button 4..15 | -1 (unassigned) | Game controller button 4..15 while pulled low |
+| Mode | 9 | Select axis output mode (touch boards only) |
 
 Each button GPIO is active low: pulling it to ground reports the
 corresponding game controller button as pressed.  A button set to `-1`
@@ -48,10 +66,11 @@ is skipped and never reports as pressed.
 The **mode** GPIO is an active-low push button that toggles the axis
 output mode: each press switches between **impulse** and **continuous**
 mode. The button does not need to be held; the controller starts in
-impulse mode.
+impulse mode. The mode GPIO exists only on boards with touch; the
+generic board has no mode input.
 
 > Note: buttons 0-2 default to GPIO4-GPIO6 and button 3 to GPIO8 (with
-> buttons 4-6 unassigned) and the mode GPIO to GPIO9; remap them in
+> buttons 4-15 unassigned) and the mode GPIO to GPIO9; remap them in
 > `menuconfig` to free pins as required.
 
 ## Gesture mapping
@@ -125,10 +144,13 @@ Every event sends a 6-byte report, identical to the format used by
 
 ```
 byte 0    : buttons 0-7   (bit n = button n pressed)
-byte 1    : buttons 8-9   (bits 0-1) + 6-bit padding (must be 0)
+byte 1    : buttons 8-15  (bit n = button n+8 pressed)
 bytes 2-3 : X axis, signed 16-bit little-endian (0 = centre)
 bytes 4-5 : Y axis, signed 16-bit little-endian (0 = centre)
 ```
+
+All 16 button bits are usable: buttons 0-7 occupy byte 0 and buttons
+8-15 occupy byte 1.
 
 ## Configuration
 
@@ -144,8 +166,8 @@ Tunable options are exposed under **Touch Controller** in `menuconfig`:
 | `TC_COLOR_CONTINUOUS_ACTIVE` | 0xff8000 | Continuous-mode active indicator (orange) |
 | `TC_UART_TX_GPIO` | 7 | UART TX GPIO number |
 | `TC_UART_BAUD` | 115200 | UART baud rate |
-| `TC_BTN0_GPIO` .. `TC_BTN6_GPIO` | 4, 5, 6, 8, -1, -1, -1 | Button 0-6 input GPIO numbers (-1 = unassigned) |
-| `TC_MODE_GPIO` | 9 | Impulse/continuous mode input GPIO |
+| `TC_BTN0_GPIO` .. `TC_BTN15_GPIO` | 4, 5, 6, 8, then -1 | Button 0-15 input GPIO numbers (-1 = unassigned) |
+| `TC_MODE_GPIO` | 9 | Impulse/continuous mode input GPIO (touch boards) |
 | `TC_SLIDE_MIN_PX` | 25 | Minimum travel to classify a slide |
 | `TC_TAP_MAX_MOVE_PX` | 15 | Maximum movement for a long tap |
 | `TC_LONG_TAP_MS` | 500 | Long-tap threshold (mode toggle) |
