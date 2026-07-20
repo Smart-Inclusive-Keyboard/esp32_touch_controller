@@ -153,7 +153,7 @@ comment "mode GPIO defaults to GPIO9.  Remap them to free pins as needed."
 
 config TC_BTN0_GPIO
     int "Button 0 GPIO number"
-    default 4
+    default -1
     range -1 30
     help
         Pull-up input GPIO that generates game controller button 0
@@ -162,7 +162,7 @@ config TC_BTN0_GPIO
 
 config TC_BTN1_GPIO
     int "Button 1 GPIO number"
-    default 5
+    default -1
     range -1 30
     help
         Pull-up input GPIO that generates game controller button 1
@@ -171,7 +171,7 @@ config TC_BTN1_GPIO
 
 config TC_BTN2_GPIO
     int "Button 2 GPIO number"
-    default 6
+    default -1
     range -1 30
     help
         Pull-up input GPIO that generates game controller button 2
@@ -180,7 +180,7 @@ config TC_BTN2_GPIO
 
 config TC_BTN3_GPIO
     int "Button 3 GPIO number"
-    default 8
+    default -1
     range -1 30
     help
         Pull-up input GPIO that generates game controller button 3
@@ -302,7 +302,7 @@ config TC_BTN15_GPIO
 config TC_MODE_GPIO
     int "Impulse/continuous mode GPIO number"
     depends on TC_HAS_TOUCH
-    default 9
+    default 6
     range 0 30
     help
         Pull-up input GPIO used as an active-low push button that toggles
